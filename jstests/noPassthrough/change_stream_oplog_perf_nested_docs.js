@@ -8,14 +8,13 @@
 (function() {
     "use strict";
 
-    load("jstests/libs/replsettest.js");
-
     // === Configuration ===
     const DEPTHS = [5, 10, 20, 50, 100];
     const DOCS_PER_DEPTH = 1000;
     const BATCH_SIZE = 100;
     const WARMUP_DOCS = 100;
-    const SHAPES = ["singleKey", "multiField"];
+    const FIELDS_PER_LEVEL = 100;
+    const SHAPES = ["singleKey", "multiField", "wide100"];
 
     // === Document generators ===
 
@@ -39,9 +38,28 @@
         return {a: 1, b: "hello", c: 42, d: true, nested: makeNestedDocMultiField(depth - 1)};
     }
 
+    /**
+     * Very-wide per level: each level has 100 scalar fields plus a nested sub-document.
+     * This avoids exponential growth while stressing large object materialization at each depth.
+     */
+    function makeNestedDocWide(depth, fieldsPerLevel) {
+        const doc = {};
+        for (let i = 0; i < fieldsPerLevel; i++) {
+            doc["f" + i] = i;
+        }
+        if (depth <= 1) {
+            return doc;
+        }
+        doc.nested = makeNestedDocWide(depth - 1, fieldsPerLevel);
+        return doc;
+    }
+
     function makeDoc(shape, depth) {
         if (shape === "singleKey") {
             return makeNestedDocSingleKey(depth);
+        }
+        if (shape === "wide100") {
+            return makeNestedDocWide(depth, FIELDS_PER_LEVEL);
         }
         return makeNestedDocMultiField(depth);
     }
