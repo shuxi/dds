@@ -129,6 +129,11 @@
         const sampleDoc = docs[0];
         const docSizeBytes = Object.bsonsize(sampleDoc);
 
+        // --- TEST A: Change Stream Read ---
+        // Important: the change stream cursor must be opened BEFORE inserting the documents we
+        // expect to observe; change streams don't return historical events by default.
+        const csCursor = coll.aggregate([{$changeStream: {}}]);
+
         // Warmup: insert a few docs to prime the collection
         const warmupDocs = [];
         for (let i = 0; i < WARMUP_DOCS; i++) {
@@ -137,9 +142,6 @@
             warmupDocs.push(doc);
         }
         insertInBatches(coll, warmupDocs);
-
-        // --- TEST A: Change Stream Read ---
-        const csCursor = coll.aggregate([{$changeStream: {}}]);
 
         // Consume warmup events from change stream
         let warmupRead = 0;
@@ -158,12 +160,18 @@
         csCursor.close();
 
         // --- TEST B: Direct Oplog Read ---
-        // Record oplog position before inserts
+        // Recreate the collection so Test B measures a clean insert workload and avoids duplicate
+        // _id collisions from Test A.
+        coll.drop();
+        assert.commandWorked(testDB.createCollection(collName));
+
+        // Record oplog position before inserts.
         const oplogTsBefore = getLatestOplogTs(primaryConn);
 
         const oplogInsertStart = new Date().getTime();
         insertInBatches(coll, docs);
         const oplogCursor = primaryConn.getDB("local").oplog.rs.find({
+            op: "i",
             ns: collFullName,
             ts: {$gte: oplogTsBefore}
         }).sort({$natural: 1}).batchSize(1000);
