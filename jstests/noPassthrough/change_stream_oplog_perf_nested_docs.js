@@ -8,6 +8,8 @@
 (function() {
     "use strict";
 
+    load("jstests/libs/replsettest.js");
+
     // === Configuration ===
     const DEPTHS = [5, 10, 20, 50, 100];
     const DOCS_PER_DEPTH = 1000;
@@ -49,8 +51,8 @@
     /**
      * Get the latest oplog timestamp.
      */
-    function getLatestOplogTs() {
-        const localDB = db.getSiblingDB("local");
+    function getLatestOplogTs(primaryConn) {
+        const localDB = primaryConn.getDB("local");
         const latest = localDB.oplog.rs.find().sort({$natural: -1}).limit(1).next();
         return latest.ts;
     }
@@ -114,7 +116,7 @@
 
     // === Main benchmark runner ===
 
-    function runBenchmark(testDB, collName, depth, shape) {
+    function runBenchmark(primaryConn, testDB, collName, depth, shape) {
         const coll = testDB[collName];
 
         // Clean slate
@@ -157,11 +159,11 @@
 
         // --- TEST B: Direct Oplog Read ---
         // Record oplog position before inserts
-        const oplogTsBefore = getLatestOplogTs();
+        const oplogTsBefore = getLatestOplogTs(primaryConn);
 
         const oplogInsertStart = new Date().getTime();
         insertInBatches(coll, docs);
-        const oplogCursor = db.getSiblingDB("local").oplog.rs.find({
+        const oplogCursor = primaryConn.getDB("local").oplog.rs.find({
             ns: collFullName,
             ts: {$gte: oplogTsBefore}
         }).sort({$natural: 1}).batchSize(1000);
@@ -202,13 +204,25 @@
 
     const results = [];
 
-    for (let shapeIdx = 0; shapeIdx < SHAPES.length; shapeIdx++) {
-        const shape = SHAPES[shapeIdx];
-        for (let depthIdx = 0; depthIdx < DEPTHS.length; depthIdx++) {
-            const depth = DEPTHS[depthIdx];
-            jsTestLog("--- Running: shape=" + shape + " depth=" + depth + " ---");
-            results.push(runBenchmark(db, "perf_cs_oplog_test", depth, shape));
+    const rst = new ReplSetTest({nodes: 1});
+
+    rst.startSet();
+    rst.initiate();
+
+    const primary = rst.getPrimary();
+    const testDB = primary.getDB(jsTestName());
+
+    try {
+        for (let shapeIdx = 0; shapeIdx < SHAPES.length; shapeIdx++) {
+            const shape = SHAPES[shapeIdx];
+            for (let depthIdx = 0; depthIdx < DEPTHS.length; depthIdx++) {
+                const depth = DEPTHS[depthIdx];
+                jsTestLog("--- Running: shape=" + shape + " depth=" + depth + " ---");
+                results.push(runBenchmark(primary, testDB, "perf_cs_oplog_test", depth, shape));
+            }
         }
+    } finally {
+        rst.stopSet();
     }
 
     // === Print summary table ===
