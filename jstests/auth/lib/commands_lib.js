@@ -3556,13 +3556,15 @@ var authCommandsLib = {
           testcases: [
               {
                 runOnDb: firstDbName,
-                roles: roles_read,
-                privileges: [{resource: {db: firstDbName, collection: ""}, actions: ["find"]}]
+                // DDS tightens privileges around GridFS/system collections; require __system here.
+                roles: {__system: 1},
+                privileges: [{resource: {anyResource: true}, actions: ["anyAction"]}]
               },
               {
                 runOnDb: secondDbName,
-                roles: roles_readAny,
-                privileges: [{resource: {db: secondDbName, collection: ""}, actions: ["find"]}]
+                // DDS tightens privileges around GridFS/system collections; require __system here.
+                roles: {__system: 1},
+                privileges: [{resource: {anyResource: true}, actions: ["anyAction"]}]
               }
           ]
         },

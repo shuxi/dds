@@ -11,6 +11,7 @@ env.Library(
         "cluster_query_knobs.cpp",
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/catalog_raii',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/curop_failpoint_helpers',

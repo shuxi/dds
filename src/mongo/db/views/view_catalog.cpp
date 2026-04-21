@@ -254,8 +254,9 @@ StatusWith<stdx::unordered_set<NamespaceString>> ViewCatalog::_validatePipeline_
                               std::move(resolvedNamespaces),
                               boost::none);
 
-    // Save this to a variable to avoid reading the atomic variable multiple times.
-    auto currentFCV = serverGlobalParams.featureCompatibility.getVersion();
+    // The featureCompatibilityVersion may not be initialized yet in certain test/startup
+    // environments. Use the unsafe accessor so view validation does not invariant-fail.
+    auto currentFCV = serverGlobalParams.featureCompatibility.getVersionUnsafe();
 
     // If the feature compatibility version is not 4.0, and we are validating features as master,
     // ban the use of new agg features introduced in 4.0 to prevent them from being persisted in the

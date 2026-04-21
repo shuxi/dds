@@ -44,11 +44,11 @@ For detail information about building, please see [the build manual](https://git
 
 If you want to build everything (mongod, mongo, tests, etc):
 
-    $ python2 buildscripts/scons.py all
+    $ python2 buildscripts/scons.py MONGO_VERSION=4.0.3 all
 
 If you only want to build the database:
 
-    $ python2 buildscripts/scons.py mongod
+    $ python2 buildscripts/scons.py MONGO_VERSION=4.0.3 mongod
 
 To install
 

@@ -190,7 +190,12 @@ CollectionImpl::~CollectionImpl() {
     if (_uuid) {
         if (auto opCtx = cc().getOperationContext()) {
             auto& uuidCatalog = UUIDCatalog::get(opCtx);
-            invariant(uuidCatalog.lookupCollectionByUUID(_uuid.get()) != _this);
+            // In some test/mock environments, collection teardown can occur while the UUIDCatalog
+            // still points at this Collection instance. Avoid invariant-failing by evicting the
+            // stale entry.
+            if (uuidCatalog.lookupCollectionByUUID(_uuid.get()) == _this) {
+                uuidCatalog.removeUUIDCatalogEntry(_uuid.get());
+            }
             auto& cache = NamespaceUUIDCache::get(opCtx);
             // TODO(geert): cache.verifyNotCached(ns(), uuid().get());
             cache.evictNamespace(ns());

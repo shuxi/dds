@@ -213,6 +213,11 @@ runTest(false, true);
 runTest(true, false);
 runTest(true, true);
 
-runNonlocalTest(get_ipaddr());
+var externalIp = get_ipaddr();
+if (externalIp) {
+    runNonlocalTest(externalIp);
+} else {
+    print("No non-loopback IPv4 address found; skipping runNonlocalTest().");
+}
 
 runRoleTest();

@@ -74,19 +74,6 @@ namespace mongo {
 // to run without aborting transactions.
 MONGO_EXPORT_SERVER_PARAMETER(maxTransactionLockRequestTimeoutMillis, int, 5);
 
-// Server parameter that dictates the lifetime given to each transaction.
-// Transactions must eventually expire to preempt storage cache pressure immobilizing the system.
-MONGO_EXPORT_SERVER_PARAMETER(transactionLifetimeLimitSeconds, std::int32_t, 60)
-    ->withValidator([](const auto& potentialNewValue) {
-        if (potentialNewValue < 1) {
-            return Status(ErrorCodes::BadValue,
-                          "transactionLifetimeLimitSeconds must be greater than or equal to 1s");
-        }
-
-        return Status::OK();
-    });
-
-
 namespace {
 
 // The command names that are allowed in a multi-document transaction.
@@ -1491,7 +1478,7 @@ boost::optional<repl::OplogEntry> SessionMongoD::createMatchingTransactionTableU
         );
 }
 
-std::unique_ptr<Session> Session::makeOwn(LogicalSessionId lsid) {
+std::unique_ptr<Session> makeSessionMongoD(LogicalSessionId lsid) {
     return stdx::make_unique<SessionMongoD>(std::move(lsid));
 }
 

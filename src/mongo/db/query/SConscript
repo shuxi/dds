@@ -106,6 +106,11 @@ env.CppUnitTest(
         "$BUILD_DIR/mongo/db/pipeline/aggregation_request",
         "query_test_service_context",
         "query_common",
+        "$BUILD_DIR/mongo/db/auth/authmocks",
+        "$BUILD_DIR/mongo/db/query_exec",
+        "$BUILD_DIR/mongo/db/serveronly",
+        "$BUILD_DIR/mongo/db/service_context_d",
+        "$BUILD_DIR/mongo/dbtests/mocklib",
     ],
 )
 

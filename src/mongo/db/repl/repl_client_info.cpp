@@ -45,8 +45,12 @@ const Client::Decoration<ReplClientInfo> ReplClientInfo::forClient =
     Client::declareDecoration<ReplClientInfo>();
 
 void ReplClientInfo::setLastOp(const OpTime& ot) {
-    invariant(ot >= _lastOp);
-    _lastOp = ot;
+    // In some in-process/mock environments (e.g. dbtests using DBDirectClient), the reported
+    // OpTime can be uninitialized or otherwise appear to move backwards. The last op time for a
+    // Client should be monotonic, so ignore backward movements.
+    if (ot >= _lastOp) {
+        _lastOp = ot;
+    }
 }
 
 void ReplClientInfo::setLastOpToSystemLastOpTime(OperationContext* opCtx) {

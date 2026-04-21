@@ -501,14 +501,24 @@ boost::filesystem::path ProgramRunner::findProgram(const string& prog) {
 #endif
 
     // The file could exist if it is specified as a full path.
-    if (p.is_absolute() && boost::filesystem::exists(p)) {
-        return p;
+    if (p.is_absolute()) {
+        try {
+            if (boost::filesystem::exists(p)) {
+                return p;
+            }
+        } catch (const boost::filesystem::filesystem_error&) {
+            // If we cannot stat() the path (e.g. permission denied), treat it as not found.
+        }
     }
 
     // Check if the binary exists in the current working directory
     boost::filesystem::path t = boost::filesystem::current_path() / p;
-    if (boost::filesystem::exists(t)) {
-        return t;
+    try {
+        if (boost::filesystem::exists(t)) {
+            return t;
+        }
+    } catch (const boost::filesystem::filesystem_error&) {
+        // Ignore unreadable paths and continue with PATH search.
     }
 
 #ifndef _WIN32
@@ -529,10 +539,16 @@ boost::filesystem::path ProgramRunner::findProgram(const string& prog) {
 
     for (const std::string& pathEntry : pathEntries) {
         boost::filesystem::path potentialBinary = boost::filesystem::path(pathEntry) / p;
-        if (boost::filesystem::exists(potentialBinary) &&
-            boost::filesystem::is_regular_file(potentialBinary) &&
-            access(potentialBinary.c_str(), X_OK) == 0) {
-            return potentialBinary;
+        try {
+            if (boost::filesystem::exists(potentialBinary) &&
+                boost::filesystem::is_regular_file(potentialBinary) &&
+                access(potentialBinary.c_str(), X_OK) == 0) {
+                return potentialBinary;
+            }
+        } catch (const boost::filesystem::filesystem_error&) {
+            // Some PATH entries may be unreadable (e.g. WSL inheriting WindowsApps PATH).
+            // Skip and continue searching.
+            continue;
         }
     }
 #endif

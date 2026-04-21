@@ -264,7 +264,12 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             if (path != "" && !path.endsWith("/"))
                 path += "/";
 
-            path = MongoRunner.dataPath + path;
+            // Avoid double-prefixing when callers already supply a path rooted at MongoRunner.dataPath
+            // (e.g. resmoke sets MongoRunner.dataPath and passes relative paths like
+            // "build/.../mongorunner/mongod-<port>").
+            if (!path.startsWith(MongoRunner.dataPath)) {
+                path = MongoRunner.dataPath + path;
+            }
         }
 
         return path;

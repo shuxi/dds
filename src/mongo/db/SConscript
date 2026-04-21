@@ -538,6 +538,7 @@ env.Clone().InjectModule("enterprise").Library(
         "audit.cpp",
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/util/background_job',
     ],
 )
 
@@ -656,6 +657,7 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         'commands/server_status',
+        'session_d',
         'update/update_driver',
     ]
 )

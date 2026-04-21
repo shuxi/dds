@@ -135,6 +135,18 @@ public:
 
         getGlobalServiceContext()->setOpObserver(stdx::make_unique<OpObserverShardingImpl>());
 
+        // Ensure the oplog is created fresh for each test. Previous dbtest suites may have created
+        // and populated the oplog in this process, which breaks assumptions in these tests.
+        {
+            Lock::GlobalWrite lk(&_opCtx);
+            OldClientContext ctx(&_opCtx, "local");
+            if (auto db = ctx.db()) {
+                WriteUnitOfWork wuow(&_opCtx);
+                db->dropCollection(&_opCtx, cllNS()).transitional_ignore();
+                wuow.commit();
+            }
+        }
+
         setOplogCollectionName(getGlobalServiceContext());
         createOplog(&_opCtx);
 

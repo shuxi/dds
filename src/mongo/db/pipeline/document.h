@@ -35,6 +35,7 @@
 
 #include "mongo/base/string_data.h"
 #include "mongo/base/string_data_comparator_interface.h"
+#include "mongo/db/jsobj.h"
 #include "mongo/bson/util/builder.h"
 
 namespace mongo {
@@ -273,9 +274,7 @@ public:
     int memUsageForSorter() const {
         return getApproximateSize();
     }
-    Document getOwned() const {
-        return *this;
-    }
+    Document getOwned() const;
 
     /// only for testing
     const void* getPtr() const {
@@ -602,26 +601,118 @@ private:
 /// This is the public iterator over a document
 class FieldIterator {
 public:
-    explicit FieldIterator(const Document& doc) : _doc(doc), _it(_doc.storage().iterator()) {}
+    explicit FieldIterator(const Document& doc)
+        : _doc(doc),
+          _storage(&_doc.storage()),
+          _phase(Phase::kBsonPhase),
+          _bson(_storage->backingBson()),
+          _bsonIt(_bson),
+          _cacheIt(_storage->iteratorAll()),
+          _hasNext(false) {
+        if (!_storage->hasBackingBson()) {
+            _phase = Phase::kCachePhase;
+        }
+        advanceToNext();
+    }
 
     /// Ask if there are more fields to return.
     bool more() const {
-        return !_it.atEnd();
+        return _hasNext;
     }
 
     /// Get next item and advance iterator
     Document::FieldPair next() {
         verify(more());
 
-        Document::FieldPair fp(_it->nameSD(), _it->val);
-        _it.advance();
-        return fp;
+        Document::FieldPair out(_nextName, _nextVal);
+        advanceToNext();
+        return out;
     }
 
 private:
+    enum class Phase { kBsonPhase, kCachePhase, kDone };
+
+    static bool isMetadataField(StringData fieldName) {
+        return fieldName == Document::metaFieldTextScore || fieldName == Document::metaFieldRandVal ||
+            fieldName == Document::metaFieldSortKey;
+    }
+
+    void advanceToNext() {
+        _hasNext = false;
+
+        while (true) {
+            if (_phase == Phase::kBsonPhase) {
+                while (_bsonIt.more()) {
+                    BSONElement elem = _bsonIt.next();
+                    auto name = elem.fieldNameStringData();
+
+                    if (_storage->shouldStripMetadata() && !name.empty() && name[0] == '$' &&
+                        isMetadataField(name)) {
+                        continue;
+                    }
+
+                    const Position cachePos = _storage->findFieldInCache(name);
+                    if (cachePos.found()) {
+                        const Value& cachedVal = _storage->getField(cachePos).val;
+                        if (cachedVal.missing()) {
+                            continue;  // logically removed
+                        }
+                        _nextName = name;
+                        _nextVal = cachedVal;
+                        _hasNext = true;
+                        return;
+                    }
+
+                    _nextName = name;
+                    _nextVal = Value(elem);
+                    _hasNext = true;
+                    return;
+                }
+
+                _phase = Phase::kCachePhase;
+            }
+
+            if (_phase == Phase::kCachePhase) {
+                while (!_cacheIt.atEnd()) {
+                    const ValueElement& ve = _cacheIt.get();
+                    _cacheIt.advance();
+
+                    if (ve.fromBson) {
+                        continue;
+                    }
+                    if (ve.val.missing()) {
+                        continue;
+                    }
+                    if (_storage->shouldStripMetadata() && !ve.nameSD().empty() && ve.nameSD()[0] == '$' &&
+                        isMetadataField(ve.nameSD())) {
+                        continue;
+                    }
+
+                    _nextName = ve.nameSD();
+                    _nextVal = ve.val;
+                    _hasNext = true;
+                    return;
+                }
+
+                _phase = Phase::kDone;
+            }
+
+            return;
+        }
+    }
+
     // We'll hang on to the original document to ensure we keep its storage alive
     Document _doc;
-    DocumentStorageIterator _it;
+    const DocumentStorage* _storage;
+    Phase _phase;
+
+    BSONObj _bson;
+    BSONObjIterator _bsonIt;
+    DocumentStorageIterator _cacheIt;
+
+    bool _hasNext;
+    StringData _nextName;
+    Value _nextVal;
 };
 
 /// Macro to create Document literals. Syntax is the same as the BSON("name" << 123) macro.

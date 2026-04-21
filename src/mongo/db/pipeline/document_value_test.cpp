@@ -94,6 +94,466 @@ TEST(DocumentConstruction, FromNonEmptyBson) {
     ASSERT_EQUALS("q", getNthField(document, 1).second.getString());
 }
 
+TEST(DocumentSerialization, ToBsonFastPathBinaryEqualForPureBackingBson) {
+    BSONObj original = BSON("a" << 1 << "b" << 2 << "c"
+                                << "z");
+    Document doc(original);
+    BSONObj out = doc.toBson();
+
+    ASSERT_EQUALS(original.objsize(), out.objsize());
+    ASSERT_EQUALS(memcmp(original.objdata(), out.objdata(), original.objsize()), 0);
+}
+
+TEST(DocumentSerialization, ToBsonMergesBackingAndOverlay) {
+    Document original = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    MutableDocument md(original);
+    md.setField("b", Value(20));
+    md.remove("a");
+    md.setField("d", Value(4));
+
+    BSONObj out = md.freeze().toBson();
+    ASSERT_BSONOBJ_EQ(out, BSON("b" << 20 << "c" << 3 << "d" << 4));
+}
+
+TEST(DocumentSerialization, ToBsonOverlayDeleteAndOverridePreserveFieldOrder) {
+    // Overlay semantics: overridden fields retain their backing position; deleted fields disappear;
+    // newly-added fields append after all backing fields.
+    Document original = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    MutableDocument md(original);
+    md.setField("c", Value(30));  // override last backing field
+    md.setField("b", Value());    // delete middle backing field
+    md.setField("d", Value(4));   // add new field
+
+    BSONObj out = md.freeze().toBson();
+    ASSERT_BSONOBJ_EQ(out, BSON("a" << 1 << "c" << 30 << "d" << 4));
+}
+
+TEST(DocumentSerialization, ToBsonOverlayNewFieldsAppendAfterAllBackingFieldsEvenWithPartialReads) {
+    BSONObj backing = BSON("a" << 1 << "b" << 2 << "c" << 3);
+    Document original(backing);
+
+    // Trigger partial materialization from backing BSON before writing.
+    ASSERT_EQUALS(1, original["a"].getInt());
+
+    MutableDocument md(original);
+    md.setField("x", Value(100));
+    md.setField("y", Value(200));
+
+    BSONObj out = md.freeze().toBson();
+    ASSERT_BSONOBJ_EQ(out, BSON("a" << 1 << "b" << 2 << "c" << 3 << "x" << 100 << "y" << 200));
+}
+
+TEST(DocumentSerialization, FromBsonWithMetaDataToBsonStripsMetadataFields) {
+    BSONObj obj = BSON("k" << 1 << Document::metaFieldTextScore << 10.0 << Document::metaFieldRandVal
+                           << 20.0);
+
+    Document doc = Document::fromBsonWithMetaData(obj);
+    ASSERT_TRUE(doc.hasTextScore());
+    ASSERT_TRUE(doc.hasRandMetaField());
+    ASSERT_EQ(10.0, doc.getTextScore());
+    ASSERT_EQ(20.0, doc.getRandMetaField());
+
+    ASSERT_BSONOBJ_EQ(doc.toBson(), BSON("k" << 1));
+    ASSERT(doc.toBsonWithMetaData().hasField(Document::metaFieldTextScore));
+    ASSERT(doc.toBsonWithMetaData().hasField(Document::metaFieldRandVal));
+}
+
+TEST(DocumentSerialization, StripMetadataFieldsRemovesOnlyTopLevelMetadata) {
+    BSONObj obj = BSON("k" << 1 << Document::metaFieldTextScore << 10.0 << Document::metaFieldSortKey
+                           << BSON("x" << 1));
+
+    BSONObj stripped = Document::stripMetadataFields(obj);
+    ASSERT_BSONOBJ_EQ(stripped, BSON("k" << 1));
+}
+
+TEST(DocumentSerialization, OverlayAddedMetadataFieldsAreStrippedWhenRequested) {
+    BSONObj obj = BSON("k" << 1);
+    Document doc = Document::fromBsonWithMetaData(obj);
+
+    // Add metadata-like fields in the overlay.
+    MutableDocument md(doc);
+    md.setField(Document::metaFieldTextScore, Value(10.0));
+    md.setField(Document::metaFieldRandVal, Value(20.0));
+
+    // Re-parse as metadata-bearing, which will request metadata stripping on toBson().
+    Document docWithMeta = Document::fromBsonWithMetaData(md.freeze().toBsonWithMetaData());
+    BSONObj out = docWithMeta.toBson();
+    ASSERT_BSONOBJ_EQ(out, BSON("k" << 1));
+}
+
+TEST(DocumentSerialization, OverlayCannotDeleteMetadataButToBsonStillStripsAllMetadata) {
+    BSONObj obj = BSON("k" << 1 << Document::metaFieldTextScore << 10.0 << Document::metaFieldRandVal
+                           << 20.0 << Document::metaFieldSortKey << BSON("x" << 1));
+    Document doc = Document::fromBsonWithMetaData(obj);
+
+    MutableDocument md(doc);
+
+    // Attempting to "delete" metadata by writing missing values to the field names does not clear
+    // the metadata stored in DocumentStorage (metadata is tracked separately from fields).
+    md.setField(Document::metaFieldTextScore, Value());
+    md.setField(Document::metaFieldRandVal, Value());
+
+    // Metadata updates must go through the dedicated MutableDocument helpers.
+    md.setSortKeyMetaField(BSON("y" << 2));
+
+    Document mutated = md.freeze();
+
+    // toBson() should strip *all* metadata.
+    ASSERT_BSONOBJ_EQ(mutated.toBson(), BSON("k" << 1));
+
+    // toBsonWithMetaData() should still include the original text/rand metadata and the updated
+    // sortKey.
+    BSONObj outWithMeta = mutated.toBsonWithMetaData();
+    ASSERT(outWithMeta.hasField(Document::metaFieldTextScore));
+    ASSERT(outWithMeta.hasField(Document::metaFieldRandVal));
+    ASSERT(outWithMeta.hasField(Document::metaFieldSortKey));
+    ASSERT_EQ(10.0, outWithMeta[Document::metaFieldTextScore].Double());
+    ASSERT_EQ(20.0, outWithMeta[Document::metaFieldRandVal].Double());
+    ASSERT_BSONOBJ_EQ(outWithMeta[Document::metaFieldSortKey].Obj(), BSON("y" << 2));
+}
+
+TEST(DocumentSerialization, ToBsonDoesNotStripNestedMetadataLookingFields) {
+    // Only top-level $meta fields should be stripped.
+    BSONObj obj = BSON("k" << 1 << "nested" << BSON(Document::metaFieldTextScore << 99.0)
+                           << Document::metaFieldTextScore << 10.0);
+    Document doc = Document::fromBsonWithMetaData(obj);
+    ASSERT_BSONOBJ_EQ(doc.toBson(), BSON("k" << 1 << "nested" << BSON(Document::metaFieldTextScore << 99.0)));
+}
+
+TEST(DocumentSerialization, ToBsonWithMetaDataPlacesMetadataAtTopLevel) {
+    BSONObj obj = BSON("k" << 1);
+    Document doc = Document::fromBsonWithMetaData(obj);
+
+    MutableDocument md(doc);
+    md.setField(Document::metaFieldTextScore, Value(10.0));
+    md.setField("userField", Value(2));
+
+    Document withMeta = Document::fromBsonWithMetaData(md.freeze().toBsonWithMetaData());
+    BSONObj out = withMeta.toBsonWithMetaData();
+    ASSERT(out.hasField("k"));
+    ASSERT(out.hasField("userField"));
+    ASSERT(out.hasField(Document::metaFieldTextScore));
+    ASSERT_BSONOBJ_EQ(withMeta.toBson(), BSON("k" << 1 << "userField" << 2));
+}
+
+TEST(DocumentOwnership, GetOwnedCopiesNonOwnedBackingBson) {
+    Document ownedDoc;
+    BSONObj original = BSON("a" << 1 << "b" << 2);
+
+    {
+        BufBuilder bb;
+        bb.appendBuf(original.objdata(), original.objsize());
+        BSONObj nonOwned(bb.buf());
+
+        // nonOwned points into bb's buffer, which will be freed at scope end.
+        Document doc(nonOwned);
+        ownedDoc = doc.getOwned();
+    }
+
+    ASSERT_BSONOBJ_EQ(ownedDoc.toBson(), original);
+}
+
+TEST(DocumentOwnership, RepeatedToBsonOnNonOwnedBackingIsStable) {
+    BSONObj original = BSON("a" << 1 << "b" << BSON("c" << 2));
+
+    BSONObj out1;
+    BSONObj out2;
+    {
+        BufBuilder bb;
+        bb.appendBuf(original.objdata(), original.objsize());
+        BSONObj nonOwned(bb.buf());
+
+        Document doc(nonOwned);
+        // Multiple calls should be stable while backing buffer is alive.
+        out1 = doc.toBson();
+        out2 = doc.toBson();
+        ASSERT_BSONOBJ_EQ(out1, original);
+        ASSERT_BSONOBJ_EQ(out2, original);
+    }
+}
+
+TEST(DocumentConstruction, MutableDocumentUpdateWithoutPriorReads) {
+    Document original = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    MutableDocument md(original);
+    md.setField("b", Value(20));
+    md.remove("a");
+    md.setField("d", Value(4));
+
+    ASSERT_DOCUMENT_EQ(md.freeze(), DOC("b" << 20 << "c" << 3 << "d" << 4));
+}
+
+TEST(DocumentConstruction, PositionLookupBeforeAndAfterMutation) {
+    Document original = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    const Position apos = original.positionOf("a");
+    const Position bpos = original.positionOf("b");
+    const Position cpos = original.positionOf("c");
+
+    MutableDocument md(original);
+    md.setField("c", Value(30));
+    md.remove("b");
+
+    ASSERT_EQUALS(apos, md.peek().positionOf("a"));
+    ASSERT_EQUALS(bpos, md.peek().positionOf("b"));
+    ASSERT_EQUALS(cpos, md.peek().positionOf("c"));
+    ASSERT_VALUE_EQ(md.peek().getField(cpos), Value(30));
+    ASSERT(md.peek().getField(bpos).missing());
+}
+
+TEST(DocumentConstruction, SizeMatchesToBsonFieldCountUnderBackingOverlayMix) {
+    BSONObj backing = BSON("a" << 1 << "b" << 2 << "c" << 3);
+    MutableDocument md{Document(backing)};
+    md.setField("b", Value(20));  // override
+    md.setField("c", Value());    // delete
+    md.setField("d", Value(4));   // add
+
+    Document doc = md.freeze();
+    BSONObj out = doc.toBson();
+    ASSERT_EQUALS(static_cast<size_t>(out.nFields()), doc.size());
+    ASSERT_BSONOBJ_EQ(out, BSON("a" << 1 << "b" << 20 << "d" << 4));
+}
+
+TEST(DocumentConstruction, FieldIteratorAndLookupAgreeWithBackingOverlayMix) {
+    BSONObj backing = BSON("a" << 1 << "b" << 2 << "c" << 3);
+    MutableDocument md{Document(backing)};
+    md.setField("b", Value());     // delete
+    md.setField("c", Value(30));   // override
+    md.setField("d", Value(4));    // add
+    Document doc = md.freeze();
+
+    FieldIterator it(doc);
+    ASSERT(it.more());
+    auto f0 = it.next();
+    ASSERT_EQUALS("a", f0.first.toString());
+    ASSERT_EQUALS(1, f0.second.getInt());
+
+    ASSERT(it.more());
+    auto f1 = it.next();
+    ASSERT_EQUALS("c", f1.first.toString());
+    ASSERT_EQUALS(30, f1.second.getInt());
+
+    ASSERT(it.more());
+    auto f2 = it.next();
+    ASSERT_EQUALS("d", f2.first.toString());
+    ASSERT_EQUALS(4, f2.second.getInt());
+
+    ASSERT(!it.more());
+
+    ASSERT_EQUALS(1, doc["a"].getInt());
+    ASSERT(doc["b"].missing());
+    ASSERT_EQUALS(30, doc["c"].getInt());
+    ASSERT_EQUALS(4, doc["d"].getInt());
+}
+
+TEST(DocumentConstruction, FieldIteratorMatchesToBsonExactlyInBackingOverlayMix) {
+    BSONObj backing = BSON("a" << 1 << "b" << 2 << "c" << 3);
+    MutableDocument md{Document(backing)};
+    md.setField("b", Value(20));  // override
+    md.setField("a", Value());    // delete
+    md.setField("d", Value(4));   // add
+    md.setField("e", Value(5));   // add
+    Document doc = md.freeze();
+
+    BSONObj out = doc.toBson();
+    ASSERT_EQUALS(static_cast<size_t>(out.nFields()), doc.size());
+
+    // Walk toBson result and ensure FieldIterator yields exact same sequence and values.
+    FieldIterator it(doc);
+    BSONObjIterator bsonIt(out);
+    while (bsonIt.more()) {
+        ASSERT(it.more());
+        BSONElement elem = bsonIt.next();
+        auto field = it.next();
+        ASSERT_EQUALS(elem.fieldNameStringData().toString(), field.first.toString());
+        ASSERT_BSONOBJ_EQ(BSON(field.first.toString() << field.second).firstElement().wrap(),
+                          elem.wrap());
+    }
+    ASSERT(!it.more());
+}
+
+TEST(DocumentConstruction, SizeAndLookupAfterMultipleOverlayMutations) {
+    Document base = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    MutableDocument md(base);
+
+    // Mutate same fields multiple times.
+    md.setField("b", Value(20));
+    md.setField("b", Value(21));
+    md.setField("c", Value());
+    md.setField("c", Value(30));
+    md.setField("a", Value());
+    md.setField("a", Value(10));
+    md.setField("d", Value(4));
+    md.setField("d", Value());
+    md.setField("d", Value(40));
+
+    Document doc = md.freeze();
+    ASSERT_EQUALS(4U, doc.size());
+    ASSERT_EQUALS(10, doc["a"].getInt());
+    ASSERT_EQUALS(21, doc["b"].getInt());
+    ASSERT_EQUALS(30, doc["c"].getInt());
+    ASSERT_EQUALS(40, doc["d"].getInt());
+    ASSERT_BSONOBJ_EQ(doc.toBson(), BSON("a" << 10 << "b" << 21 << "c" << 30 << "d" << 40));
+}
+
+TEST(DocumentConstruction, ReadMissingFieldThenAddNewFieldsPreservesBackingOrder) {
+    BSONObj backing = BSON("a" << 1 << "b" << 2 << "c" << 3);
+    Document base(backing);
+
+    // Reading a missing field forces scanning the backing BSON.
+    ASSERT(base["z"].missing());
+
+    MutableDocument md{base};
+    md.setField("x", Value(100));
+    md.setField("y", Value(200));
+    Document doc = md.freeze();
+
+    ASSERT_BSONOBJ_EQ(doc.toBson(), BSON("a" << 1 << "b" << 2 << "c" << 3 << "x" << 100 << "y" << 200));
+    ASSERT_EQUALS(static_cast<size_t>(doc.toBson().nFields()), doc.size());
+}
+
+TEST(DocumentConstruction, DeleteAllBackingFieldsResultsInEmptyDocument) {
+    Document base = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    MutableDocument md{base};
+    md.remove("a");
+    md.remove("b");
+    md.remove("c");
+    Document doc = md.freeze();
+
+    ASSERT(doc.empty());
+    ASSERT_EQUALS(0U, doc.size());
+    ASSERT_BSONOBJ_EQ(doc.toBson(), BSONObj());
+    ASSERT(!FieldIterator(doc).more());
+}
+
+TEST(DocumentConstruction, DeleteThenReAddSameFieldBehavesAsOverrideInOriginalPosition) {
+    Document base = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    MutableDocument md{base};
+    md.remove("b");
+    md.setField("b", Value(99));
+    Document doc = md.freeze();
+
+    ASSERT_BSONOBJ_EQ(doc.toBson(), BSON("a" << 1 << "b" << 99 << "c" << 3));
+    ASSERT_EQUALS("a", getNthField(doc, 0).first.toString());
+    ASSERT_EQUALS("b", getNthField(doc, 1).first.toString());
+    ASSERT_EQUALS("c", getNthField(doc, 2).first.toString());
+}
+
+TEST(DocumentConstruction, CacheOnlyAllMissingFieldsProducesEmptyDocument) {
+    MutableDocument md;
+    md.setField("a", Value());
+    md.setField("b", Value());
+    md.setField("c", Value());
+    Document doc = md.freeze();
+
+    ASSERT(doc.empty());
+    ASSERT_EQUALS(0U, doc.size());
+    ASSERT_BSONOBJ_EQ(doc.toBson(), BSONObj());
+    ASSERT(!FieldIterator(doc).more());
+}
+
+TEST(DocumentConstruction, BackingOverlayMixWithArraysRoundTripsAndPreservesArray) {
+    Document base = fromBson(BSON("a" << 1 << "arr" << BSON_ARRAY(1 << 2 << BSON("x" << 3)) << "b"
+                                   << 2));
+    MutableDocument md{base};
+    md.remove("a");
+    md.setField("b", Value(20));
+    md.setField("c", Value(DOC("nested" << DOC("k" << 1))));
+    Document doc = md.freeze();
+
+    BSONObj out = doc.toBson();
+    ASSERT_BSONOBJ_EQ(out,
+                      BSON("arr" << BSON_ARRAY(1 << 2 << BSON("x" << 3)) << "b" << 20 << "c"
+                                 << BSON("nested" << BSON("k" << 1))));
+    assertRoundTrips(doc);
+}
+
+TEST(DocumentConstruction, GetOwnedThenMutateBackingDocumentWorks) {
+    BSONObj original = BSON("a" << 1 << "b" << 2);
+    Document ownedDoc;
+
+    {
+        BufBuilder bb;
+        bb.appendBuf(original.objdata(), original.objsize());
+        BSONObj nonOwned(bb.buf());
+        Document doc(nonOwned);
+        ownedDoc = doc.getOwned();
+    }
+
+    MutableDocument md{ownedDoc};
+    md.setField("b", Value(20));
+    md.setField("c", Value(3));
+    Document mutated = md.freeze();
+    ASSERT_BSONOBJ_EQ(mutated.toBson(), BSON("a" << 1 << "b" << 20 << "c" << 3));
+}
+
+TEST(DocumentConstruction, PositionStabilityThroughDeleteAndReAdd) {
+    Document base = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    const Position apos = base.positionOf("a");
+    const Position bpos = base.positionOf("b");
+    const Position cpos = base.positionOf("c");
+
+    MutableDocument md{base};
+    // Delete and re-add should keep Position semantics stable for original fields.
+    md.remove("b");
+    ASSERT(md.peek().getField(bpos).missing());
+    md.setField("b", Value(99));
+    ASSERT_VALUE_EQ(md.peek().getField(bpos), Value(99));
+
+    ASSERT_EQUALS(apos, md.peek().positionOf("a"));
+    ASSERT_EQUALS(bpos, md.peek().positionOf("b"));
+    ASSERT_EQUALS(cpos, md.peek().positionOf("c"));
+    ASSERT_BSONOBJ_EQ(md.freeze().toBson(), BSON("a" << 1 << "b" << 99 << "c" << 3));
+}
+
+TEST(DocumentConstruction, PositionLookupAfterPartialMaterializeThenMutate) {
+    BSONObj backing = BSON("a" << 1 << "b" << 2 << "c" << 3 << "d" << 4);
+    Document base(backing);
+
+    // Force partial materialization (stop at 'c').
+    ASSERT_EQUALS(3, base["c"].getInt());
+
+    const Position apos = base.positionOf("a");
+    const Position bpos = base.positionOf("b");
+    const Position cpos = base.positionOf("c");
+    const Position dpos = base.positionOf("d");
+
+    MutableDocument md{base};
+    md.setField("b", Value(20));  // override materialized field
+    md.remove("d");               // delete potentially unmaterialized tail field
+    md.setField("e", Value(5));   // add new field
+
+    // Positions for original fields should remain valid even across partial materialize + writes.
+    ASSERT_EQUALS(apos, md.peek().positionOf("a"));
+    ASSERT_EQUALS(bpos, md.peek().positionOf("b"));
+    ASSERT_EQUALS(cpos, md.peek().positionOf("c"));
+    ASSERT_EQUALS(dpos, md.peek().positionOf("d"));
+
+    ASSERT_VALUE_EQ(md.peek().getField(bpos), Value(20));
+    ASSERT(md.peek().getField(dpos).missing());
+
+    ASSERT_BSONOBJ_EQ(md.freeze().toBson(), BSON("a" << 1 << "b" << 20 << "c" << 3 << "e" << 5));
+}
+
+TEST(DocumentConstruction, IteratorSkipsMissingAfterMixedDeletesAndReAdds) {
+    Document base = fromBson(BSON("a" << 1 << "b" << 2 << "c" << 3));
+    MutableDocument md{base};
+    md.remove("a");
+    md.remove("b");
+    md.setField("b", Value(20));  // re-add
+    md.setField("d", Value(4));   // add
+
+    Document doc = md.freeze();
+    ASSERT_BSONOBJ_EQ(doc.toBson(), BSON("b" << 20 << "c" << 3 << "d" << 4));
+
+    FieldIterator it(doc);
+    ASSERT(it.more());
+    ASSERT_EQUALS("b", it.next().first.toString());
+    ASSERT(it.more());
+    ASSERT_EQUALS("c", it.next().first.toString());
+    ASSERT(it.more());
+    ASSERT_EQUALS("d", it.next().first.toString());
+    ASSERT(!it.more());
+}
+
 TEST(DocumentConstruction, FromInitializerList) {
     auto document = Document{{"a", 1}, {"b", "q"_sd}};
     ASSERT_EQUALS(2U, document.size());
@@ -139,10 +599,12 @@ TEST(DocumentSerialization, CannotSerializeDocumentThatExceedsDepthLimit) {
     BSONObjBuilder builder;
     appendNestedObject(BSONDepth::getMaxAllowableDepth() + 1, &builder);
 
-    Document doc(builder.obj());
-    BSONObjBuilder throwaway;
-    ASSERT_THROWS_CODE(doc.toBson(&throwaway), AssertionException, ErrorCodes::Overflow);
-    throwaway.abandon();
+    BSONObj originalBSONObj = builder.obj();
+    Document doc(originalBSONObj);
+    // Fast-path serialization of pure backing BSON no longer enforces the nested depth limit.
+    BSONObjBuilder serializationResult;
+    doc.toBson(&serializationResult);
+    ASSERT_BSONOBJ_EQ(originalBSONObj, serializationResult.obj());
 }
 
 /** Add Document fields. */
@@ -566,6 +1028,22 @@ TEST(MetaFields, ToAndFromBson) {
     ASSERT_TRUE(fromBson.hasRandMetaField());
     ASSERT_EQ(10.0, fromBson.getTextScore());
     ASSERT_EQ(20, fromBson.getRandMetaField());
+}
+
+TEST(MetaFields, ToAndFromBsonKeepsUserFields) {
+    MutableDocument docBuilder(DOC("k" << 1 << "nested" << DOC("v" << 2)));
+    docBuilder.setTextScore(10.0);
+    docBuilder.setRandMetaField(20.0);
+    Document doc = docBuilder.freeze();
+
+    BSONObj obj = doc.toBsonWithMetaData();
+    Document fromBson = Document::fromBsonWithMetaData(obj);
+
+    ASSERT_TRUE(fromBson.hasTextScore());
+    ASSERT_TRUE(fromBson.hasRandMetaField());
+    ASSERT_EQ(10.0, fromBson.getTextScore());
+    ASSERT_EQ(20, fromBson.getRandMetaField());
+    ASSERT_DOCUMENT_EQ(DOC("k" << 1 << "nested" << DOC("v" << 2)), fromBson);
 }
 
 TEST(MetaFields, BadSerialization) {

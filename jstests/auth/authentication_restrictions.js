@@ -30,9 +30,16 @@
         var db = conn.getDB("admin");
 
         // Create a strongly consistent session for consuming user data, with a non-localhost
-        // source IP.
-        var externalMongo = new Mongo(get_ipaddr() + ":" + conn.port);
-        var externalDb = externalMongo.getDB("admin");
+        // source IP. In minimal container environments there may be no non-loopback interface;
+        // skip "remote access" assertions in that case.
+        var externalIp = get_ipaddr();
+        var externalDb = null;
+        if (externalIp) {
+            var externalMongo = new Mongo(externalIp + ":" + conn.port);
+            externalDb = externalMongo.getDB("admin");
+        } else {
+            print("No non-loopback IPv4 address found; skipping remote access assertions.");
+        }
 
         assert.commandWorked(admin.runCommand({
             createUser: "user2",
@@ -142,17 +149,19 @@
         assert(db.auth("user8", "Password@a1b"));
 
         print("=== Remote access tests");
-        print(
-            "When a client on the external interface authenticates to a user with {clientSource: \"127.0.0.1\"}, it will fail");
-        assert(!externalDb.auth("user6", "Password@a1b"));
+        if (externalDb) {
+            print(
+                "When a client on the external interface authenticates to a user with {clientSource: \"127.0.0.1\"}, it will fail");
+            assert(!externalDb.auth("user6", "Password@a1b"));
 
-        print(
-            "When a client on the external interface authenticates to a user with {serverAddress: \"127.0.0.1\"}, it will fail");
-        assert(!externalDb.auth("user7", "Password@a1b"));
+            print(
+                "When a client on the external interface authenticates to a user with {serverAddress: \"127.0.0.1\"}, it will fail");
+            assert(!externalDb.auth("user7", "Password@a1b"));
 
-        print(
-            "When a client on the external interface authenticates to a user with {clientSource: \"127.0.0.1\", serverAddress: \"127.0.0.1\"}, it will fail");
-        assert(!externalDb.auth("user8", "Password@a1b"));
+            print(
+                "When a client on the external interface authenticates to a user with {clientSource: \"127.0.0.1\", serverAddress: \"127.0.0.1\"}, it will fail");
+            assert(!externalDb.auth("user8", "Password@a1b"));
+        }
 
         print("=== Invalidation tests");
         print(
@@ -165,10 +174,14 @@
                 [{clientSource: ["127.0.0.1"], serverAddress: ["127.0.0.1"]}],
             "digestPassword": true
         }));
-        assert(!externalDb.auth("user11", "Password@a1b"));
+        if (externalDb) {
+            assert(!externalDb.auth("user11", "Password@a1b"));
+        }
         assert.commandWorked(
             admin.runCommand({updateUser: "user11", authenticationRestrictions: []}));
-        assert(externalDb.auth("user11", "Password@a1b"));
+        if (externalDb) {
+            assert(externalDb.auth("user11", "Password@a1b"));
+        }
 
         print(
             "When a client sets authenticationRestrictions on a user, authorization privileges are revoked");

@@ -188,15 +188,15 @@ public:
         return _inAdminWhiteList;
     }
 
-    bool isCustomerConnection() const {
+    virtual bool isCustomerConnection() const {
         return (!_inAdminWhiteList);
     }
 
-    bool isFromPublicIp() const {
+    virtual bool isFromPublicIp() const {
         return _fromPublicIp;
     }
 
-    bool isFromPrivateIp1() const {
+    virtual bool isFromPrivateIp1() const {
         return _fromPrivateIp;
     }
 
@@ -208,7 +208,7 @@ public:
         _ipv6 = true;
     }
 
-    bool isFromIpv6() const {
+    virtual bool isFromIpv6() const {
         return _ipv6;
     }
 

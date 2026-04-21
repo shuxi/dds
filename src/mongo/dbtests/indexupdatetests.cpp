@@ -74,6 +74,14 @@ protected:
 
     bool buildIndexInterrupted(const BSONObj& key, bool allowInterruption) {
         try {
+            // When tests request a global kill, we still want to verify behavior for the
+            // non-interruptible path. Make lock acquisition uninterruptible so the index build
+            // isn't aborted via interruptible lock waits.
+            boost::optional<UninterruptibleLockGuard> noInterrupt;
+            if (!allowInterruption) {
+                noInterrupt.emplace(_opCtx.lockState());
+            }
+
             MultiIndexBlock indexer(&_opCtx, collection());
             if (allowInterruption)
                 indexer.allowInterruption();

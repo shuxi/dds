@@ -43,12 +43,29 @@ using boost::intrusive_ptr;
 using std::string;
 using std::vector;
 
+namespace {
+bool isMetadataField(StringData fieldName);
+}  // namespace
+
 const DocumentStorage DocumentStorage::kEmptyDoc;
 
 const std::vector<StringData> Document::allMetadataFieldNames = {
     Document::metaFieldTextScore, Document::metaFieldRandVal, Document::metaFieldSortKey};
 
 Position DocumentStorage::findField(StringData requested) const {
+    Position pos = findFieldInCache(requested);
+    if (pos.found()) {
+        return pos;
+    }
+
+    if (materializeUntil(requested)) {
+        return findFieldInCache(requested);
+    }
+
+    return Position();
+}
+
+Position DocumentStorage::findFieldInCache(StringData requested) const {
     int reqSize = requested.size();  // get size calculation out of the way if needed
 
     if (_numFields >= HASH_TAB_MIN) {  // hash lookup
@@ -76,7 +93,171 @@ Position DocumentStorage::findField(StringData requested) const {
     return Position();
 }
 
-Value& DocumentStorage::appendField(StringData name) {
+void DocumentStorage::setBackingBson(BSONObj bson) {
+    initFromBson(bson);
+}
+
+size_t DocumentStorage::size() const {
+    if (!hasBackingBson()) {
+        // Cache-only: can't use _numFields because it includes removed fields.
+        size_t count = 0;
+        for (DocumentStorageIterator it = iterator(); !it.atEnd(); it.advance()) {
+            count++;
+        }
+        return count;
+    }
+
+    // With backing BSON: start from backing field count, then apply overlay adjustments.
+    size_t count = _numBsonFields;
+    for (DocumentStorageIterator it = iteratorAll(); !it.atEnd(); it.advance()) {
+        if (it->fromBson) {
+            if (it->val.missing()) {
+                count--;
+            }
+        } else {
+            if (!it->val.missing()) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+void DocumentStorage::makeOwned() const {
+    if (_bson.isEmpty() || _bson.isOwned()) {
+        return;
+    }
+
+    const char* oldObjData = _bson.objdata();
+    const char* oldIt = _bsonIt;
+
+    _bson = _bson.getOwned();
+
+    if (oldIt) {
+        _bsonIt = _bson.objdata() + (oldIt - oldObjData);
+    } else {
+        _bsonIt = _bson.isEmpty() ? nullptr : _bson.objdata() + 4;
+    }
+}
+
+void DocumentStorage::initFromBson(const BSONObj& bson) {
+    _bson = bson.getOwned();
+    _bsonIt = _bson.isEmpty() ? nullptr : _bson.objdata() + 4;
+    _modified = false;
+
+    _bsonHasMetadata = false;
+    _stripMetadata = false;
+    _numBsonFields = _bson.isEmpty() ? 0U : static_cast<uint32_t>(_bson.nFields());
+}
+
+void DocumentStorage::initFromBsonWithMetadata(const BSONObj& bson) {
+    _bson = bson.getOwned();
+    _bsonIt = _bson.isEmpty() ? nullptr : _bson.objdata() + 4;
+    _modified = false;
+
+    _bsonHasMetadata = false;
+    _stripMetadata = false;
+    _numBsonFields = 0U;
+
+    BSONObjIterator it(_bson);
+    while (it.more()) {
+        BSONElement elem(it.next());
+        auto fieldName = elem.fieldNameStringData();
+
+        if (!fieldName.empty() && fieldName[0] == '$') {
+            if (fieldName == Document::metaFieldTextScore) {
+                setTextScore(elem.Double());
+                _bsonHasMetadata = true;
+                continue;
+            } else if (fieldName == Document::metaFieldRandVal) {
+                setRandMetaField(elem.Double());
+                _bsonHasMetadata = true;
+                continue;
+            } else if (fieldName == Document::metaFieldSortKey) {
+                setSortKeyMetaField(elem.Obj());
+                _bsonHasMetadata = true;
+                continue;
+            }
+        }
+
+        _numBsonFields++;
+    }
+
+    _stripMetadata = _bsonHasMetadata;
+}
+
+bool DocumentStorage::materializeUntil(StringData requested) const {
+    // If already materialized (including logically removed), nothing to do.
+    if (findFieldInCache(requested).found()) {
+        return true;
+    }
+
+    if (_bson.isEmpty()) {
+        return false;
+    }
+
+    // Scan the backing BSON and only materialize the requested field.
+    //
+    // This intentionally avoids caching intermediate fields encountered during the scan. It trades
+    // off repeated scans for reduced cache growth when callers access only a small subset of fields.
+    BSONObjIterator it(_bson);
+    while (it.more()) {
+        BSONElement elem = it.next();
+        auto name = elem.fieldNameStringData();
+        if (_stripMetadata && !name.empty() && name[0] == '$' && isMetadataField(name)) {
+            continue;
+        }
+        if (name == requested) {
+            materializeOne(elem);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void DocumentStorage::materializeAll() const {
+    if (!hasUnmaterializedBson()) {
+        return;
+    }
+
+    BSONObjIterator it(_bson);
+    while (it.more()) {
+        BSONElement elem = it.next();
+        auto name = elem.fieldNameStringData();
+        if (_stripMetadata && !name.empty() && name[0] == '$' && isMetadataField(name)) {
+            continue;
+        }
+
+        // Avoid duplicating fields if they were previously materialized individually.
+        if (findFieldInCache(name).found()) {
+            continue;
+        }
+
+        materializeOne(elem);
+    }
+
+    // Mark backing BSON as fully materialized for APIs that consult hasUnmaterializedBson().
+    _bsonIt = bsonEnd();
+}
+
+void DocumentStorage::materializeOne(const BSONElement& elem) const {
+    Value& val =
+        const_cast<DocumentStorage*>(this)->appendField(elem.fieldNameStringData(), /*fromBson*/ true);
+    val = Value(elem);
+}
+
+Value& DocumentStorage::appendField(StringData name, bool fromBson) {
+    if (!fromBson && hasUnmaterializedBson()) {
+        // Preserve BSON field-order semantics: new fields must be appended after all backing fields.
+        materializeAll();
+    }
+
+    if (!fromBson) {
+        // Adding a new field is a logical modification relative to backing BSON.
+        _modified = true;
+    }
+
     Position pos = getNextPosition();
     const int nameSize = name.size();
 
@@ -86,7 +267,7 @@ Value& DocumentStorage::appendField(StringData name) {
 
     // Make room for new field (and padding at end for alignment)
     const unsigned newUsed = ValueElement::align(_usedBytes + sizeof(ValueElement) + nameSize);
-    if (_buffer + newUsed > _bufferEnd)
+    if (!_buffer || _buffer + newUsed > _bufferEnd)
         alloc(newUsed);
     _usedBytes = newUsed;
 
@@ -96,6 +277,7 @@ Value& DocumentStorage::appendField(StringData name) {
     memcpy(dest, &(x), sizeof(x)); \
     dest += sizeof(x)
     append(value);
+    append(fromBson);
     append(nextCollision);
     append(nameSize);
     name.copyTo(dest, true);
@@ -135,7 +317,7 @@ void DocumentStorage::addFieldToHashTable(Position pos) {
 void DocumentStorage::alloc(unsigned newSize) {
     const bool firstAlloc = !_buffer;
     const bool doingRehash = needRehash();
-    const size_t oldCapacity = _bufferEnd - _buffer;
+    const size_t oldCapacity = firstAlloc ? 0 : (_bufferEnd - _buffer);
 
     // make new bucket count big enough
     while (needRehash() || hashTabBuckets() < HASH_TAB_INIT_SIZE)
@@ -191,16 +373,25 @@ intrusive_ptr<DocumentStorage> DocumentStorage::clone() const {
     // Make a copy of the buffer.
     // It is very important that the positions of each field are the same after cloning.
     const size_t bufferBytes = allocatedBytes();
-    out->_buffer = new char[bufferBytes];
-    out->_bufferEnd = out->_buffer + (_bufferEnd - _buffer);
     if (bufferBytes > 0) {
+        out->_buffer = new char[bufferBytes];
+        out->_bufferEnd = out->_buffer + (_bufferEnd - _buffer);
         memcpy(out->_buffer, _buffer, bufferBytes);
+    } else {
+        out->_buffer = nullptr;
+        out->_bufferEnd = nullptr;
     }
 
     // Copy remaining fields
     out->_usedBytes = _usedBytes;
     out->_numFields = _numFields;
     out->_hashTabMask = _hashTabMask;
+    out->_bson = _bson;
+    out->_bsonIt = _bsonIt;
+    out->_modified = _modified;
+    out->_bsonHasMetadata = _bsonHasMetadata;
+    out->_stripMetadata = _stripMetadata;
+    out->_numBsonFields = _numBsonFields;
     out->_metaFields = _metaFields;
     out->_textScore = _textScore;
     out->_randVal = _randVal;
@@ -223,15 +414,9 @@ DocumentStorage::~DocumentStorage() {
 }
 
 Document::Document(const BSONObj& bson) {
-    MutableDocument md(bson.nFields());
-
-    BSONObjIterator it(bson);
-    while (it.more()) {
-        BSONElement bsonElement(it.next());
-        md.addField(bsonElement.fieldNameStringData(), Value(bsonElement));
-    }
-
-    *this = md.freeze();
+    boost::intrusive_ptr<DocumentStorage> storage(new DocumentStorage());
+    storage->setBackingBson(bson);
+    _storage = std::move(storage);
 }
 
 Document::Document(std::initializer_list<std::pair<StringData, ImplicitValue>> initializerList) {
@@ -251,6 +436,38 @@ BSONObjBuilder& operator<<(BSONObjBuilderValueStream& builder, const Document& d
     return builder.builder();
 }
 
+namespace {
+bool isMetadataField(StringData fieldName) {
+    return fieldName == Document::metaFieldTextScore || fieldName == Document::metaFieldRandVal ||
+        fieldName == Document::metaFieldSortKey;
+}
+
+void uassertValidBsonDepthForToBson(const BSONObj& obj, size_t recursionLevel) {
+    std::vector<BSONObjIterator> frames;
+    frames.reserve(16);
+    frames.emplace_back(obj);
+
+    while (!frames.empty()) {
+        const auto elem = frames.back().next();
+        if (elem.type() == BSONType::Object || elem.type() == BSONType::Array) {
+            // 'recursionLevel' is 1 for the top-level Document::toBson() call. Each additional
+            // nested object/array increments the effective recursion level by 1.
+            if (MONGO_unlikely(recursionLevel + frames.size() > BSONDepth::getMaxAllowableDepth())) {
+                uasserted(ErrorCodes::Overflow,
+                          str::stream()
+                              << "cannot convert document to BSON because it exceeds the limit of "
+                              << BSONDepth::getMaxAllowableDepth() << " levels of nesting");
+            }
+            frames.emplace_back(elem.embeddedObject());
+        }
+
+        if (!frames.back().more()) {
+            frames.pop_back();
+        }
+    }
+}
+}  // namespace
+
 void Document::toBson(BSONObjBuilder* builder, size_t recursionLevel) const {
     uassert(ErrorCodes::Overflow,
             str::stream() << "cannot convert document to BSON because it exceeds the limit of "
@@ -258,7 +475,57 @@ void Document::toBson(BSONObjBuilder* builder, size_t recursionLevel) const {
                           << " levels of nesting",
             recursionLevel <= BSONDepth::getMaxAllowableDepth());
 
-    for (DocumentStorageIterator it = storage().iterator(); !it.atEnd(); it.advance()) {
+    const auto& docStorage = storage();
+
+    // Fast path: backing BSON with no logical modifications and no metadata stripping requested.
+    // Note: Lazy materialization (reading fields into cache) does not count as a logical modification.
+    if (docStorage.hasBackingBson() && !docStorage.isModified() && !docStorage.shouldStripMetadata()) {
+        builder->bb().appendBuf(docStorage.backingBson().objdata() + 4,
+                                docStorage.backingBson().objsize() - 5);
+        return;
+    }
+
+    // Slow path: merge backing BSON (base image) with cache (overlay).
+    if (docStorage.hasBackingBson()) {
+        // We may append unmaterialized BSON elements directly, which would otherwise bypass the
+        // recursion-level checks in Value::addToBsonObj().
+        uassertValidBsonDepthForToBson(docStorage.backingBson(), recursionLevel);
+        BSONObjIterator it(docStorage.backingBson());
+        while (it.more()) {
+            BSONElement elem = it.next();
+            auto name = elem.fieldNameStringData();
+
+            if (docStorage.shouldStripMetadata() && !name.empty() && name[0] == '$' &&
+                isMetadataField(name)) {
+                continue;
+            }
+
+            Position cachePos = docStorage.findFieldInCache(name);
+            if (cachePos.found()) {
+                const Value& cachedVal = docStorage.getField(cachePos).val;
+                if (!cachedVal.missing()) {
+                    cachedVal.addToBsonObj(builder, name, recursionLevel);
+                }
+            } else {
+                // Not materialized or modified: append raw backing BSON element.
+                builder->append(elem);
+            }
+        }
+    }
+
+    // Append cache-only fields (new fields) in insertion order.
+    for (DocumentStorageIterator it = docStorage.iteratorAll(); !it.atEnd(); it.advance()) {
+        if (it->fromBson) {
+            continue;
+        }
+        if (it->val.missing()) {
+            continue;
+        }
+        if (docStorage.shouldStripMetadata() && !it->nameSD().empty() && it->nameSD()[0] == '$' &&
+            isMetadataField(it->nameSD())) {
+            continue;
+        }
+
         it->val.addToBsonObj(builder, it->nameSD(), recursionLevel);
     }
 }
@@ -286,30 +553,34 @@ BSONObj Document::toBsonWithMetaData() const {
 }
 
 Document Document::fromBsonWithMetaData(const BSONObj& bson) {
-    MutableDocument md;
+    boost::intrusive_ptr<DocumentStorage> storage(new DocumentStorage());
+    storage->initFromBsonWithMetadata(bson);
+    return Document(storage.get());
+}
 
-    BSONObjIterator it(bson);
+BSONObj Document::stripMetadataFields(const BSONObj& bsonWithMetadata) {
+    BSONObjBuilder bb;
+
+    BSONObjIterator it(bsonWithMetadata);
     while (it.more()) {
-        BSONElement elem(it.next());
+        BSONElement elem = it.next();
         auto fieldName = elem.fieldNameStringData();
-        if (fieldName[0] == '$') {
-            if (fieldName == metaFieldTextScore) {
-                md.setTextScore(elem.Double());
-                continue;
-            } else if (fieldName == metaFieldRandVal) {
-                md.setRandMetaField(elem.Double());
-                continue;
-            } else if (fieldName == metaFieldSortKey) {
-                md.setSortKeyMetaField(elem.Obj());
-                continue;
-            }
+        if (!fieldName.empty() && fieldName[0] == '$' && isMetadataField(fieldName)) {
+            continue;
         }
-
-        // Note: this will not parse out metadata in embedded documents.
-        md.addField(fieldName, Value(elem));
+        bb.append(elem);
     }
 
-    return md.freeze();
+    return bb.obj();
+}
+
+Document Document::getOwned() const {
+    if (!_storage || !storage().hasBackingBson()) {
+        return *this;
+    }
+
+    storage().makeOwned();
+    return *this;
 }
 
 MutableDocument::MutableDocument(size_t expectedFields)
@@ -382,9 +653,11 @@ size_t Document::getApproximateSize() const {
 
     size_t size = sizeof(DocumentStorage);
     size += storage().allocatedBytes();
+    size += storage().backingBsonSize();
 
-    for (DocumentStorageIterator it = storage().iterator(); !it.atEnd(); it.advance()) {
-        size += it->val.getApproximateSize();
+    for (FieldIterator it(*this); it.more();) {
+        auto field = it.next();
+        size += field.second.getApproximateSize();
         size -= sizeof(Value);  // already accounted for above
     }
 
@@ -393,52 +666,54 @@ size_t Document::getApproximateSize() const {
 
 void Document::hash_combine(size_t& seed,
                             const StringData::ComparatorInterface* stringComparator) const {
-    for (DocumentStorageIterator it = storage().iterator(); !it.atEnd(); it.advance()) {
-        StringData name = it->nameSD();
+    for (FieldIterator it(*this); it.more();) {
+        auto field = it.next();
+        StringData name = field.first;
         boost::hash_range(seed, name.rawData(), name.rawData() + name.size());
-        it->val.hash_combine(seed, stringComparator);
+        field.second.hash_combine(seed, stringComparator);
     }
 }
 
 int Document::compare(const Document& rL,
                       const Document& rR,
                       const StringData::ComparatorInterface* stringComparator) {
-    DocumentStorageIterator lIt = rL.storage().iterator();
-    DocumentStorageIterator rIt = rR.storage().iterator();
+    FieldIterator lIt(rL);
+    FieldIterator rIt(rR);
 
     while (true) {
-        if (lIt.atEnd()) {
-            if (rIt.atEnd())
+        if (!lIt.more()) {
+            if (!rIt.more())
                 return 0;  // documents are the same length
 
             return -1;  // left document is shorter
         }
 
-        if (rIt.atEnd())
+        if (!rIt.more())
             return 1;  // right document is shorter
 
-        const ValueElement& rField = rIt.get();
-        const ValueElement& lField = lIt.get();
+        const auto lField = lIt.next();
+        const auto rField = rIt.next();
+        const StringData lName = lField.first;
+        const StringData rName = rField.first;
+        const Value& lVal = lField.second;
+        const Value& rVal = rField.second;
 
         // For compatibility with BSONObj::woCompare() consider the canonical type of values
         // before considerting their names.
-        if (lField.val.getType() != rField.val.getType()) {
-            const int rCType = canonicalizeBSONType(rField.val.getType());
-            const int lCType = canonicalizeBSONType(lField.val.getType());
+        if (lVal.getType() != rVal.getType()) {
+            const int rCType = canonicalizeBSONType(rVal.getType());
+            const int lCType = canonicalizeBSONType(lVal.getType());
             if (lCType != rCType)
                 return lCType < rCType ? -1 : 1;
         }
 
-        const int nameCmp = lField.nameSD().compare(rField.nameSD());
+        const int nameCmp = lName.compare(rName);
         if (nameCmp)
             return nameCmp;  // field names are unequal
 
-        const int valueCmp = Value::compare(lField.val, rField.val, stringComparator);
+        const int valueCmp = Value::compare(lVal, rVal, stringComparator);
         if (valueCmp)
             return valueCmp;  // fields are unequal
-
-        rIt.advance();
-        lIt.advance();
     }
 }
 
@@ -449,8 +724,9 @@ string Document::toString() const {
     StringBuilder out;
     const char* prefix = "{";
 
-    for (DocumentStorageIterator it = storage().iterator(); !it.atEnd(); it.advance()) {
-        out << prefix << it->nameSD() << ": " << it->val.toString();
+    for (FieldIterator it(*this); it.more();) {
+        auto field = it.next();
+        out << prefix << field.first << ": " << field.second.toString();
         prefix = ", ";
     }
     out << '}';
@@ -462,9 +738,10 @@ void Document::serializeForSorter(BufBuilder& buf) const {
     const int numElems = size();
     buf.appendNum(numElems);
 
-    for (DocumentStorageIterator it = storage().iterator(); !it.atEnd(); it.advance()) {
-        buf.appendStr(it->nameSD(), /*NUL byte*/ true);
-        it->val.serializeForSorter(buf);
+    for (FieldIterator it(*this); it.more();) {
+        auto field = it.next();
+        buf.appendStr(field.first, /*NUL byte*/ true);
+        field.second.serializeForSorter(buf);
     }
 
     if (hasTextScore()) {

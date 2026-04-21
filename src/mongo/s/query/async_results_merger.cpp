@@ -38,7 +38,6 @@
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/getmore_request.h"
 #include "mongo/db/query/killcursors_request.h"
-#include "mongo/db/session_catalog.h"
 #include "mongo/executor/remote_command_request.h"
 #include "mongo/executor/remote_command_response.h"
 #include "mongo/s/commands/cluster_commands_helpers.h"
@@ -369,15 +368,11 @@ Status AsyncResultsMerger::_askForNextBatch(WithLock, size_t remoteIndex) {
 
         if (_params.getTxnNumber()) {
             newCmdBob.append(OperationSessionInfo::kTxnNumberFieldName, *_params.getTxnNumber());
+            // getMore in a transaction should always carry autocommit:false.
+            // startTransaction belongs to the command which starts the transaction, not getMore.
+            newCmdBob.append("autocommit", false);
         }
-
-        ShardId shardId(_params.getRemotes()[remoteIndex].getShardId().toString());
-        auto session = OperationContextSession::get(_opCtx);
-        if (session) {
-            cmdObj = session->appendTransactionInfo(_opCtx, shardId, newCmdBob.obj());
-        } else {
-            cmdObj = newCmdBob.obj();
-        }
+        cmdObj = newCmdBob.obj();
     }
 
     executor::RemoteCommandRequest request(

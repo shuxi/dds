@@ -66,6 +66,7 @@
 #include "mongo/db/repl/sync_tail.h"
 #include "mongo/db/repl/timestamp_block.h"
 #include "mongo/db/s/op_observer_sharding_impl.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/kv/kv_storage_engine.h"
 #include "mongo/dbtests/dbtests.h"
@@ -132,6 +133,11 @@ public:
               mongo::serverGlobalParams.enableMajorityReadConcern)) {
             return;
         }
+
+        // Other dbtest suites (and replication startup paths) can leave FCV unset in-process.
+        // This suite exercises createCollection/view paths that call getVersion() on FCV.
+        serverGlobalParams.featureCompatibility.setVersion(
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
 
         repl::ReplSettings replSettings;
         replSettings.setOplogSizeBytes(10 * 1024 * 1024);

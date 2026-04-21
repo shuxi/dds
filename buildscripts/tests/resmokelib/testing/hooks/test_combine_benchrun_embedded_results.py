@@ -7,9 +7,8 @@ import datetime
 import os
 import unittest
 
-import mock
-
 import buildscripts.resmokelib.testing.hooks.combine_benchrun_embedded_results as cber
+import buildscripts.resmokelib.testing.hooks.interface as hook_interface
 
 # pylint: disable=missing-docstring,protected-access,attribute-defined-outside-init
 
@@ -80,10 +79,17 @@ _END_TIME = 32503680000
 
 class CombineBenchrunEmbeddedResultsFixture(unittest.TestCase):
 
-    # Mock the hook's parent class because we're testing only functionality of this hook and
-    # not anything related to or inherit from the parent class.
-    @mock.patch("buildscripts.resmokelib.testing.hooks.interface.Hook", autospec=True)
-    def setUp(self, MockHook):  # pylint: disable=arguments-differ,unused-argument
+    def setUp(self):  # pylint: disable=arguments-differ
+        # Avoid depending on the external 'mock' library in Python 2.7.
+        # We only need to bypass Hook base class initialization for these unit tests.
+        original_init = hook_interface.Hook.__init__
+
+        def _noop_init(self, *args, **kwargs):  # pylint: disable=unused-argument
+            return None
+
+        hook_interface.Hook.__init__ = _noop_init
+        self.addCleanup(lambda: setattr(hook_interface.Hook, "__init__", original_init))
+
         self.cber_hook = cber.CombineBenchrunEmbeddedResults(None, None)
         self.cber_hook.create_time = datetime.datetime.utcfromtimestamp(_START_TIME)
         self.cber_hook.end_time = datetime.datetime.utcfromtimestamp(_END_TIME)

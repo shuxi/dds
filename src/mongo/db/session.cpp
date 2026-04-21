@@ -55,6 +55,7 @@
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/db/stats/top.h"
 #include "mongo/db/transaction_history_iterator.h"
+#include "mongo/s/is_mongos.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/transport/transport_layer.h"
 #include "mongo/util/fail_point_service.h"
@@ -63,6 +64,21 @@
 #include "mongo/util/net/socket_utils.h"
 
 namespace mongo {
+
+// Server parameter that dictates the lifetime given to each transaction.
+// Transactions must eventually expire to preempt storage cache pressure immobilizing the system.
+MONGO_EXPORT_SERVER_PARAMETER(transactionLifetimeLimitSeconds, std::int32_t, 60)
+    ->withValidator([](const auto& potentialNewValue) {
+        if (potentialNewValue < 1) {
+            return Status(ErrorCodes::BadValue,
+                          "transactionLifetimeLimitSeconds must be greater than or equal to 1s");
+        }
+
+        return Status::OK();
+    });
+
+std::unique_ptr<Session> makeSessionMongoD(LogicalSessionId lsid) __attribute__((weak));
+std::unique_ptr<Session> makeSessionMongoS(LogicalSessionId lsid) __attribute__((weak));
 
 boost::optional<repl::OplogEntry> Session::createMatchingTransactionTableUpdate(
     const repl::OplogEntry& entry) {
@@ -101,6 +117,16 @@ boost::optional<repl::OplogEntry> Session::createMatchingTransactionTableUpdate(
         boost::none,  // preImangeOpTime
         boost::none   // postImageOpTime
         );
+}
+
+std::unique_ptr<Session> Session::makeOwn(LogicalSessionId lsid) {
+    if (isMongos()) {
+        uassert(90459, "SessionMongoS factory is not linked", makeSessionMongoS);
+        return makeSessionMongoS(std::move(lsid));
+    }
+
+    uassert(90460, "SessionMongoD factory is not linked", makeSessionMongoD);
+    return makeSessionMongoD(std::move(lsid));
 }
 
 }  // namespace mongo

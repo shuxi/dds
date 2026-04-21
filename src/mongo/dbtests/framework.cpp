@@ -42,6 +42,7 @@
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/op_observer_registry.h"
 #include "mongo/db/s/sharding_state.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/dbtests/dbtests.h"
@@ -90,6 +91,11 @@ int runDbTests(int argc, char** argv) {
     srand((unsigned)frameworkGlobalParams.seed);
 
     initializeStorageEngine(globalServiceContext, StorageEngineInitFlags::kNone);
+    // Startup/repair and some replication paths may leave featureCompatibilityVersion unset when
+    // there is no admin.system.version document (typical for dbtest data directories). Many
+    // catalog and aggregation paths require initialized FCV (SERVER-32630).
+    serverGlobalParams.featureCompatibility.setVersion(
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
     auto registry = stdx::make_unique<OpObserverRegistry>();
     registry->addObserver(stdx::make_unique<UUIDCatalogObserver>());
     globalServiceContext->setOpObserver(std::move(registry));

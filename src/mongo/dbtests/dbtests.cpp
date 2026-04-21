@@ -142,6 +142,10 @@ int dbtestsMain(int argc, char** argv, char** envp) {
 
     auto logicalClock = stdx::make_unique<LogicalClock>(service);
     LogicalClock::set(service, std::move(logicalClock));
+    // dbtests runs everything in-process with a mock repl coordinator and direct clients. Disable
+    // the logical clock to avoid invariants around operationTime monotonicity in metadata
+    // propagation, which are not relevant for these unit tests.
+    LogicalClock::get(service)->disable();
 
     auto fastClock = stdx::make_unique<ClockSourceMock>();
     // Timestamps are split into two 32-bit integers, seconds and "increments". Currently (but

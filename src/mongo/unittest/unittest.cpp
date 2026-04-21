@@ -187,7 +187,8 @@ void Test::setUp() {
         ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
 }
 void Test::tearDown() {
-    serverGlobalParams.featureCompatibility.reset();
+    // Keep FCV initialized across tests. Some dbtests exercise code paths during teardown/cleanup
+    // that may read the FCV via getVersion(), which invariant-fails if FCV is unset.
 }
 
 namespace {

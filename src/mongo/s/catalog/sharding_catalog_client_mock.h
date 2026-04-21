@@ -79,6 +79,8 @@ public:
     StatusWith<std::vector<TagsType>> getTagsForCollection(OperationContext* opCtx,
                                                            const NamespaceString& nss) override;
 
+    Status getDatabases(OperationContext* opCtx, std::vector<BSONObj>* dbs) override;
+
     StatusWith<repl::OpTimeWith<std::vector<ShardType>>> getAllShards(
         OperationContext* opCtx, repl::ReadConcernLevel readConcern) override;
 

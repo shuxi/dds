@@ -79,6 +79,7 @@ class ValueElement {
 
 public:
     Value val;
+    bool fromBson;          // True if this field was materialized from backing BSON.
     Position nextCollision;  // Position of next field with same hashBucket
     const int nameLen;       // doesn't include '\0'
     const char _name[1];     // pointer to start of name (use nameSD instead)
@@ -124,7 +125,8 @@ private:
 };
 // Real size is sizeof(ValueElement) + nameLen
 #pragma pack()
-MONGO_STATIC_ASSERT(sizeof(ValueElement) == (sizeof(Value) + sizeof(Position) + sizeof(int) + 1));
+MONGO_STATIC_ASSERT(sizeof(ValueElement) ==
+                    (sizeof(Value) + sizeof(bool) + sizeof(Position) + sizeof(int) + 1));
 
 // This is an internal class for Document. See FieldIterator for the public version.
 class DocumentStorageIterator {
@@ -187,6 +189,11 @@ public:
           _usedBytes(0),
           _numFields(0),
           _hashTabMask(0),
+          _bsonIt(NULL),
+          _modified(false),
+          _bsonHasMetadata(false),
+          _stripMetadata(false),
+          _numBsonFields(0),
           _metaFields(),
           _textScore(0),
           _randVal(0) {}
@@ -205,13 +212,7 @@ public:
         return kEmptyDoc;
     }
 
-    size_t size() const {
-        // can't use _numFields because it includes removed Fields
-        size_t count = 0;
-        for (DocumentStorageIterator it = iterator(); !it.atEnd(); it.advance())
-            count++;
-        return count;
-    }
+    size_t size() const;
 
     /// Returns the position of the next field to be inserted
     Position getNextPosition() const {
@@ -220,6 +221,70 @@ public:
 
     /// Returns the position of the named field (may be missing) or Position()
     Position findField(StringData name) const;
+    Position findFieldInCache(StringData name) const;
+
+    /**
+     * Initializes backing BSON. No fields are materialized into cache initially.
+     */
+    void setBackingBson(BSONObj bson);
+
+    /**
+     * Initializes backing BSON without extracting metadata fields.
+     *
+     * This stores an owned copy of 'bson' in the backing store and sets up iteration state for
+     * lazy materialization.
+     */
+    void initFromBson(const BSONObj& bson);
+
+    /**
+     * Initializes backing BSON and eagerly extracts top-level metadata fields ($textScore, $randVal,
+     * $sortKey) into DocumentStorage metadata, leaving user fields in the backing store.
+     *
+     * When metadata fields are present, '_stripMetadata' will be set so that iteration/serialization
+     * can omit them.
+     */
+    void initFromBsonWithMetadata(const BSONObj& bson);
+
+    bool hasBackingBson() const {
+        return !_bson.isEmpty();
+    }
+
+    const BSONObj& backingBson() const {
+        return _bson;
+    }
+
+    bool shouldStripMetadata() const {
+        return _stripMetadata;
+    }
+
+    bool cacheIsEmpty() const {
+        return _numFields == 0;
+    }
+
+    /**
+     * True if this DocumentStorage has been logically modified relative to its backing BSON.
+     *
+     * Note: Lazy materialization (reading fields into cache with fromBson=true) is not considered
+     * a logical modification.
+     */
+    bool isModified() const {
+        return _modified;
+    }
+
+    size_t backingBsonSize() const {
+        return _bson.isEmpty() ? 0 : _bson.objsize();
+    }
+
+    /**
+     * Ensures the backing BSON buffer is owned and remains valid.
+     *
+     * Note: this is a memory-ownership operation only; it does not change observable document
+     * semantics.
+     */
+    void makeOwned() const;
+
+    /// Materializes all remaining backing BSON fields into cache.
+    void materializeAll() const;
 
     // Document uses these
     const ValueElement& getField(Position pos) const {
@@ -239,6 +304,9 @@ public:
         return *(_firstElement->plusBytes(pos.index));
     }
     Value& getField(StringData name) {
+        // This non-const accessor is used by MutableDocument and indicates intent to modify the
+        // logical document contents.
+        _modified = true;
         Position pos = findField(name);
         if (!pos.found())
             return appendField(name);  // TODO: find a way to avoid hashing name twice
@@ -246,7 +314,7 @@ public:
     }
 
     /// Adds a new field with missing Value at the end of the document
-    Value& appendField(StringData name);
+    Value& appendField(StringData name, bool fromBson = false);
 
     /** Preallocates space for fields. Use this to attempt to prevent buffer growth.
      *  This is only valid to call before anything is added to the document.
@@ -255,6 +323,7 @@ public:
 
     /// This skips missing values
     DocumentStorageIterator iterator() const {
+        materializeAll();
         return DocumentStorageIterator(_firstElement, end(), false);
     }
 
@@ -327,6 +396,19 @@ private:
 
     /// Allocates space in _buffer. Copies existing data if there is any.
     void alloc(unsigned newSize);
+    bool materializeUntil(StringData requested) const;
+    void materializeOne(const BSONElement& elem) const;
+
+    bool hasUnmaterializedBson() const {
+        return _bsonIt && _bsonIt < bsonEnd();
+    }
+
+    const char* bsonEnd() const {
+        if (_bson.isEmpty()) {
+            return nullptr;
+        }
+        return _bson.objdata() + _bson.objsize() - 1;
+    }
 
     /// Call after adding field to _buffer and increasing _numFields
     void addFieldToHashTable(Position pos);
@@ -383,19 +465,27 @@ private:
     //
     // When the buffer grows, the hash table moves to the new end.
     union {
-        char* _buffer;
-        ValueElement* _firstElement;
+        mutable char* _buffer;
+        mutable ValueElement* _firstElement;
     };
 
     union {
         // pointer to "end" of _buffer element space and start of hash table (same position)
-        char* _bufferEnd;
-        Position* _hashTab;  // table lazily initialized once _numFields == HASH_TAB_MIN
+        mutable char* _bufferEnd;
+        mutable Position* _hashTab;  // table lazily initialized once _numFields == HASH_TAB_MIN
     };
 
-    unsigned _usedBytes;    // position where next field would start
-    unsigned _numFields;    // this includes removed fields
-    unsigned _hashTabMask;  // equal to hashTabBuckets()-1 but used more often
+    mutable unsigned _usedBytes;    // position where next field would start
+    mutable unsigned _numFields;    // this includes removed fields
+    mutable unsigned _hashTabMask;  // equal to hashTabBuckets()-1 but used more often
+
+    mutable BSONObj _bson;         // backing BSON
+    mutable const char* _bsonIt;  // next unmaterialized BSONElement, or end/null if exhausted
+    mutable bool _modified;       // true if logically modified from backing BSON
+
+    bool _bsonHasMetadata;   // backing BSON contains top-level metadata fields
+    bool _stripMetadata;     // skip metadata fields during iteration/serialization
+    uint32_t _numBsonFields;  // number of non-metadata fields in backing BSON
 
     std::bitset<MetaType::NUM_FIELDS> _metaFields;
     double _textScore;

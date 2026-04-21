@@ -111,6 +111,13 @@ StatusWith<std::vector<TagsType>> ShardingCatalogClientMock::getTagsForCollectio
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
+Status ShardingCatalogClientMock::getDatabases(OperationContext* opCtx, std::vector<BSONObj>* dbs) {
+    if (dbs) {
+        dbs->clear();
+    }
+    return Status::OK();
+}
+
 StatusWith<repl::OpTimeWith<std::vector<ShardType>>> ShardingCatalogClientMock::getAllShards(
     OperationContext* opCtx, repl::ReadConcernLevel readConcern) {
     return {ErrorCodes::InternalError, "Method not implemented"};
@@ -126,7 +133,6 @@ bool ShardingCatalogClientMock::runUserManagementWriteCommand(OperationContext* 
 
 bool ShardingCatalogClientMock::runUserManagementReadCommandWithCheckopCtx(
     OperationContext* opCtx,
-    const string& commandName,
     const string& dbname,
     const BSONObj& cmdObj,
     BSONObjBuilder* result) {
