@@ -230,6 +230,14 @@
 
     const results = [];
 
+    // This codebase configures mongod with an admin whitelist file by default. Ensure the file
+    // exists so ReplSetTest can start nodes successfully in environments where mongod requires
+    // the path to be present.
+    // The whitelist parser expects at least one line (fgets must succeed). An empty line means
+    // "match none/all" is controlled elsewhere; here we just need a valid file.
+    removeFile("/tmp/adminWhiteList");
+    writeFile("/tmp/adminWhiteList", "\n");
+
     const rst = new ReplSetTest({nodes: 1});
 
     rst.startSet();
