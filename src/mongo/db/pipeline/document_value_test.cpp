@@ -33,6 +33,8 @@
 #include "mongo/db/json.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_comparator.h"
+#include "mongo/db/pipeline/document_internal.h"
+#include "mongo/db/pipeline/document_knobs.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/pipeline/value.h"
@@ -55,6 +57,22 @@ mongo::Document::FieldPair getNthField(mongo::Document doc, size_t index) {
 namespace Document {
 
 using mongo::Document;
+using mongo::DocumentStorage;
+
+class ScopedDocumentBackingBsonKnob {
+public:
+    explicit ScopedDocumentBackingBsonKnob(bool enabled)
+        : _oldValue(mongo::internalDocumentUseBackingBson.load()) {
+        mongo::internalDocumentUseBackingBson.store(enabled);
+    }
+
+    ~ScopedDocumentBackingBsonKnob() {
+        mongo::internalDocumentUseBackingBson.store(_oldValue);
+    }
+
+private:
+    bool _oldValue;
+};
 
 BSONObj toBson(const Document& document) {
     return document.toBson();
@@ -95,6 +113,7 @@ TEST(DocumentConstruction, FromNonEmptyBson) {
 }
 
 TEST(DocumentSerialization, ToBsonFastPathBinaryEqualForPureBackingBson) {
+    ScopedDocumentBackingBsonKnob knob(true);
     BSONObj original = BSON("a" << 1 << "b" << 2 << "c"
                                 << "z");
     Document doc(original);
@@ -102,6 +121,19 @@ TEST(DocumentSerialization, ToBsonFastPathBinaryEqualForPureBackingBson) {
 
     ASSERT_EQUALS(original.objsize(), out.objsize());
     ASSERT_EQUALS(memcmp(original.objdata(), out.objdata(), original.objsize()), 0);
+}
+
+TEST(DocumentConstruction, FromBsonEagerIterativeWhenBackingDisabled) {
+    ScopedDocumentBackingBsonKnob knob(false);
+    BSONObj original = BSON("a" << 1 << "b" << 2 << "c"
+                                << "z");
+    Document doc(original);
+
+    auto storagePtr = static_cast<const DocumentStorage*>(doc.getPtr());
+    ASSERT(storagePtr);
+    ASSERT_FALSE(storagePtr->hasBackingBson());
+
+    ASSERT_BSONOBJ_EQ(doc.toBson(), original);
 }
 
 TEST(DocumentSerialization, ToBsonMergesBackingAndOverlay) {

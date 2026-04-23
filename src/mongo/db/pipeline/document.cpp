@@ -37,6 +37,7 @@
 #include "mongo/bson/bson_depth.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/field_path.h"
+#include "mongo/db/pipeline/document_knobs.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/log.h"
 
@@ -187,6 +188,76 @@ void DocumentStorage::initFromBsonWithMetadata(const BSONObj& bson) {
     }
 
     _stripMetadata = _bsonHasMetadata;
+}
+
+void DocumentStorage::initFromBsonIterative(const BSONObj& bson) {
+    // This initializer is intended for fresh DocumentStorage instances.
+    dassert(!_buffer);
+
+    const BSONObj owned = bson.getOwned();
+
+    _bson = BSONObj();
+    _bsonIt = nullptr;
+    _modified = false;
+    _bsonHasMetadata = false;
+    _stripMetadata = false;
+    _numBsonFields = 0U;
+
+    BSONObjIterator it(owned);
+    while (it.more()) {
+        BSONElement elem = it.next();
+        Value& val = appendField(elem.fieldNameStringData(), /*fromBson*/ false);
+        val = Value(elem);
+        _numBsonFields++;
+    }
+
+    // Treat the document as unmodified; it was fully initialized from the input BSON.
+    _modified = false;
+}
+
+void DocumentStorage::initFromBsonWithMetadataIterative(const BSONObj& bson) {
+    // This initializer is intended for fresh DocumentStorage instances.
+    dassert(!_buffer);
+
+    const BSONObj owned = bson.getOwned();
+
+    _bson = BSONObj();
+    _bsonIt = nullptr;
+    _modified = false;
+    _bsonHasMetadata = false;
+    _stripMetadata = false;
+    _numBsonFields = 0U;
+
+    BSONObjIterator it(owned);
+    while (it.more()) {
+        BSONElement elem = it.next();
+        auto fieldName = elem.fieldNameStringData();
+
+        if (!fieldName.empty() && fieldName[0] == '$') {
+            if (fieldName == Document::metaFieldTextScore) {
+                setTextScore(elem.Double());
+                _bsonHasMetadata = true;
+                continue;
+            } else if (fieldName == Document::metaFieldRandVal) {
+                setRandMetaField(elem.Double());
+                _bsonHasMetadata = true;
+                continue;
+            } else if (fieldName == Document::metaFieldSortKey) {
+                setSortKeyMetaField(elem.Obj());
+                _bsonHasMetadata = true;
+                continue;
+            }
+        }
+
+        Value& val = appendField(fieldName, /*fromBson*/ false);
+        val = Value(elem);
+        _numBsonFields++;
+    }
+
+    _stripMetadata = _bsonHasMetadata;
+
+    // Treat the document as unmodified; it was fully initialized from the input BSON.
+    _modified = false;
 }
 
 bool DocumentStorage::materializeUntil(StringData requested) const {
@@ -418,7 +489,11 @@ DocumentStorage::~DocumentStorage() {
 
 Document::Document(const BSONObj& bson) {
     boost::intrusive_ptr<DocumentStorage> storage(new DocumentStorage());
-    storage->setBackingBson(bson);
+    if (internalDocumentUseBackingBson.load()) {
+        storage->setBackingBson(bson);
+    } else {
+        storage->initFromBsonIterative(bson);
+    }
     _storage = std::move(storage);
 }
 
@@ -483,7 +558,7 @@ void Document::toBson(BSONObjBuilder* builder, size_t recursionLevel) const {
     // Fast path: backing BSON with no logical modifications and no metadata stripping requested.
     // Note: Lazy materialization (reading fields into cache) does not count as a logical modification.
     if (docStorage.hasBackingBson() && !docStorage.isModified() && !docStorage.shouldStripMetadata()) {
-        log() << "[backingBson] Document::toBson go fast path (appendBuf backing BSON)";
+        // log() << "[backingBson] Document::toBson go fast path (appendBuf backing BSON)";
         builder->bb().appendBuf(docStorage.backingBson().objdata() + 4,
                                 docStorage.backingBson().objsize() - 5);
         return;
@@ -491,7 +566,7 @@ void Document::toBson(BSONObjBuilder* builder, size_t recursionLevel) const {
 
     // Slow path: merge backing BSON (base image) with cache (overlay).
     if (docStorage.hasBackingBson()) {
-        log() << "[backingBson] Document::toBson go slow path (merge overlay; will depth-scan)";
+        // log() << "[backingBson] Document::toBson go slow path (merge overlay; will depth-scan)";
         // We may append unmaterialized BSON elements directly, which would otherwise bypass the
         // recursion-level checks in Value::addToBsonObj().
         uassertValidBsonDepthForToBson(docStorage.backingBson(), recursionLevel);
@@ -559,7 +634,11 @@ BSONObj Document::toBsonWithMetaData() const {
 
 Document Document::fromBsonWithMetaData(const BSONObj& bson) {
     boost::intrusive_ptr<DocumentStorage> storage(new DocumentStorage());
-    storage->initFromBsonWithMetadata(bson);
+    if (internalDocumentUseBackingBson.load()) {
+        storage->initFromBsonWithMetadata(bson);
+    } else {
+        storage->initFromBsonWithMetadataIterative(bson);
+    }
     return Document(storage.get());
 }
 

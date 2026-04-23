@@ -38,6 +38,7 @@ env.Library(
     target='document_value',
     source=[
         'document.cpp',
+        'document_knobs.cpp',
         'document_comparator.cpp',
         'document_path_support.cpp',
         'value.cpp',
@@ -46,6 +47,7 @@ env.Library(
     LIBDEPS=[
         'field_path',
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/server_parameters',
         '$BUILD_DIR/mongo/db/query/datetime/date_time_support',
         '$BUILD_DIR/mongo/util/intrusive_counter',
         ]

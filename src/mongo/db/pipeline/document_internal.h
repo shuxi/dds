@@ -245,6 +245,19 @@ public:
      */
     void initFromBsonWithMetadata(const BSONObj& bson);
 
+    /**
+     * Iteratively initializes the cache from the given BSONObj, without retaining backing BSON.
+     *
+     * This eagerly scans the BSONObj and materializes all top-level fields into the cache.
+     */
+    void initFromBsonIterative(const BSONObj& bson);
+
+    /**
+     * Like initFromBsonIterative(), but treats top-level metadata fields ($textScore, $randVal,
+     * $sortKey) as metadata and does not store them as user fields.
+     */
+    void initFromBsonWithMetadataIterative(const BSONObj& bson);
+
     bool hasBackingBson() const {
         return !_bson.isEmpty();
     }
