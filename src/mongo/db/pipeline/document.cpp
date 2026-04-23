@@ -270,22 +270,36 @@ bool DocumentStorage::materializeUntil(StringData requested) const {
         return false;
     }
 
-    // Scan the backing BSON and only materialize the requested field.
-    //
-    // This intentionally avoids caching intermediate fields encountered during the scan. It trades
-    // off repeated scans for reduced cache growth when callers access only a small subset of fields.
-    BSONObjIterator it(_bson);
-    while (it.more()) {
-        BSONElement elem = it.next();
+    // Incrementally scan the backing BSON from our current scan position and materialize all
+    // scanned (non-metadata) fields into the cache. This avoids repeated O(n) rescans when callers
+    // access multiple fields on the same Document backed by a large BSON object.
+    if (!hasUnmaterializedBson()) {
+        return false;
+    }
+
+    const char* itPtr = _bsonIt;
+    const char* const end = bsonEnd();
+    while (itPtr && itPtr < end) {
+        BSONElement elem(itPtr);
+        itPtr = elem.rawdata() + elem.size();
+
         auto name = elem.fieldNameStringData();
         if (_stripMetadata && !name.empty() && name[0] == '$' && isMetadataField(name)) {
             continue;
         }
-        if (name == requested) {
+
+        // Avoid duplicating fields if they were previously materialized individually.
+        if (!findFieldInCache(name).found()) {
             materializeOne(elem);
+        }
+
+        if (name == requested) {
+            _bsonIt = itPtr;
             return true;
         }
     }
+
+    _bsonIt = end;
 
     return false;
 }
@@ -295,24 +309,25 @@ void DocumentStorage::materializeAll() const {
         return;
     }
 
-    BSONObjIterator it(_bson);
-    while (it.more()) {
-        BSONElement elem = it.next();
+    const char* itPtr = _bsonIt;
+    const char* const end = bsonEnd();
+    while (itPtr && itPtr < end) {
+        BSONElement elem(itPtr);
+        itPtr = elem.rawdata() + elem.size();
+
         auto name = elem.fieldNameStringData();
         if (_stripMetadata && !name.empty() && name[0] == '$' && isMetadataField(name)) {
             continue;
         }
 
         // Avoid duplicating fields if they were previously materialized individually.
-        if (findFieldInCache(name).found()) {
-            continue;
+        if (!findFieldInCache(name).found()) {
+            materializeOne(elem);
         }
-
-        materializeOne(elem);
     }
 
     // Mark backing BSON as fully materialized for APIs that consult hasUnmaterializedBson().
-    _bsonIt = bsonEnd();
+    _bsonIt = end;
 }
 
 void DocumentStorage::materializeOne(const BSONElement& elem) const {
