@@ -59,7 +59,6 @@ namespace mongo {
 
 using boost::intrusive_ptr;
 using boost::optional;
-using std::list;
 using std::string;
 using std::vector;
 
@@ -239,6 +238,9 @@ Document DocumentSourceChangeStreamTransform::applyTransformation(const Document
         case repl::OpTypeEnum::kInsert: {
             operationType = DocumentSourceChangeStream::kInsertOpType;
             fullDocument = input[repl::OplogEntry::kObjectFieldName];
+            log() << "[backingBson][changeStream] transform insert: fullDocument from oplog 'o' "
+                     "field, ns="
+                  << nss.ns();
             documentKey = Value(document_path_support::extractDocumentKeyFromDoc(
                 fullDocument.getDocument(), documentKeyFields));
             break;
@@ -251,6 +253,9 @@ Document DocumentSourceChangeStreamTransform::applyTransformation(const Document
         case repl::OpTypeEnum::kUpdate: {
             if (id.missing()) {
                 operationType = DocumentSourceChangeStream::kUpdateOpType;
+                log() << "[backingBson][changeStream] transform update: generating "
+                         "updateDescription (no fullDocument), ns="
+                      << nss.ns();
                 checkValueType(input[repl::OplogEntry::kObjectFieldName],
                                repl::OplogEntry::kObjectFieldName,
                                BSONType::Object);
@@ -272,6 +277,9 @@ Document DocumentSourceChangeStreamTransform::applyTransformation(const Document
             } else {
                 operationType = DocumentSourceChangeStream::kReplaceOpType;
                 fullDocument = input[repl::OplogEntry::kObjectFieldName];
+                log() << "[backingBson][changeStream] transform replace: fullDocument from oplog "
+                         "'o' field, ns="
+                      << nss.ns();
             }
             documentKey = input[repl::OplogEntry::kObject2FieldName];
             break;

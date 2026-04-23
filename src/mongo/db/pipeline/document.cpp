@@ -26,6 +26,8 @@
  * it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/pipeline/document.h"
@@ -36,6 +38,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 using namespace mongoutils;
@@ -480,6 +483,7 @@ void Document::toBson(BSONObjBuilder* builder, size_t recursionLevel) const {
     // Fast path: backing BSON with no logical modifications and no metadata stripping requested.
     // Note: Lazy materialization (reading fields into cache) does not count as a logical modification.
     if (docStorage.hasBackingBson() && !docStorage.isModified() && !docStorage.shouldStripMetadata()) {
+        log() << "[backingBson] Document::toBson go fast path (appendBuf backing BSON)";
         builder->bb().appendBuf(docStorage.backingBson().objdata() + 4,
                                 docStorage.backingBson().objsize() - 5);
         return;
@@ -487,6 +491,7 @@ void Document::toBson(BSONObjBuilder* builder, size_t recursionLevel) const {
 
     // Slow path: merge backing BSON (base image) with cache (overlay).
     if (docStorage.hasBackingBson()) {
+        log() << "[backingBson] Document::toBson go slow path (merge overlay; will depth-scan)";
         // We may append unmaterialized BSON elements directly, which would otherwise bypass the
         // recursion-level checks in Value::addToBsonObj().
         uassertValidBsonDepthForToBson(docStorage.backingBson(), recursionLevel);
