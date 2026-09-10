@@ -18,7 +18,19 @@ import os
 import re
 import subprocess
 
-from pkg_resources import parse_version
+try:
+    from packaging.version import parse as parse_version
+except ImportError:
+    try:
+        from pkg_resources import parse_version
+    except ImportError:
+        def parse_version(v):
+            # Minimal fallback sufficient for Icecream version checks.
+            parts = []
+            for piece in re.split(r'[^0-9]+', str(v)):
+                if piece.isdigit():
+                    parts.append(int(piece))
+            return tuple(parts)
 
 icecream_version_min = '1.1rc2'
 
@@ -99,7 +111,7 @@ def generate(env):
     suffixes = _CSuffixes + _CXXSuffixes
     for object_builder in SCons.Tool.createObjBuilders(env):
         emitterdict = object_builder.builder.emitter
-        for suffix in emitterdict.iterkeys():
+        for suffix in emitterdict.keys():
             if not suffix in suffixes:
                 continue
             base = emitterdict[suffix]
@@ -147,6 +159,8 @@ def exists(env):
     for line in pipe.stdout:
         if validated:
             continue  # consume all data
+        if isinstance(line, bytes):
+            line = line.decode('utf-8', 'replace')
         version_banner = re.search(r'^ICECC ', line)
         if not version_banner:
             continue

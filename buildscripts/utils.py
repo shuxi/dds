@@ -95,11 +95,14 @@ def get_git_version():
 
 
 def get_git_describe():
-    """Return 'git describe'."""
+    """Return 'git describe' as a unicode/str."""
     with open(os.devnull, "r+") as devnull:
         proc = subprocess.Popen("git describe", stdout=subprocess.PIPE, stderr=devnull,
                                 stdin=devnull, shell=True)
-        return proc.communicate()[0].strip()
+        out = proc.communicate()[0].strip()
+        if isinstance(out, bytes):
+            out = out.decode('utf-8', 'replace')
+        return out
 
 
 def execsys(args):
@@ -108,8 +111,12 @@ def execsys(args):
         rc = re.compile(r"\s+")
         args = rc.split(args)
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    res = proc.communicate()
-    return res
+    out, err = proc.communicate()
+    if isinstance(out, bytes):
+        out = out.decode('utf-8', 'replace')
+    if isinstance(err, bytes):
+        err = err.decode('utf-8', 'replace')
+    return (out, err)
 
 
 def which(executable):
@@ -130,7 +137,7 @@ def which(executable):
     return executable
 
 
-def find_python(min_version=(2, 5)):
+def find_python(min_version=(3, 6)):
     """Return path of python."""
     try:
         if sys.version_info >= min_version:
@@ -140,12 +147,15 @@ def find_python(min_version=(2, 5)):
         pass
 
     version = re.compile(r"[Pp]ython ([\d\.]+)", re.MULTILINE)
-    binaries = ("python27", "python2.7", "python26", "python2.6", "python25", "python2.5", "python")
+    binaries = ("python3", "python3.12", "python3.11", "python3.10", "python3.9", "python3.8",
+                "python3.7", "python3.6", "python")
     for binary in binaries:
         try:
             out, err = subprocess.Popen([binary, "-V"], stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE).communicate()
             for stream in (out, err):
+                if isinstance(stream, bytes):
+                    stream = stream.decode('utf-8', 'replace')
                 match = version.search(stream)
                 if match:
                     versiontuple = tuple(map(int, match.group(1).split(".")))
@@ -160,13 +170,13 @@ def find_python(min_version=(2, 5)):
 
 def replace_with_repr(unicode_error):
     """Codec error handler replacement."""
-    # Unicode is a pain, some strings cannot be unicode()'d
+    # Unicode is a pain, some strings cannot be decoded
     # but we want to just preserve the bytes in a human-readable
     # fashion. This codec error handler will substitute the
     # repr() of the offending bytes into the decoded string
     # at the position they occurred
     offender = unicode_error.object[unicode_error.start:unicode_error.end]
-    return (unicode(repr(offender).strip("'").strip('"')), unicode_error.end)
+    return (repr(offender).strip("'").strip('"'), unicode_error.end)
 
 
 codecs.register_error("repr", replace_with_repr)

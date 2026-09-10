@@ -141,7 +141,7 @@ class Graph(object):
             node_dict["id"] = id
             node_dict["node"] = {}
 
-            for property, value in vars(node).iteritems():
+            for property, value in vars(node).items():
                 if isinstance(value, set):
                     node_dict["node"][property] = list(value)
                 else:
@@ -190,7 +190,7 @@ class NodeLib(NodeInterface):
     def __init__(self, id, name, input=None):
         if isinstance(input, dict):
             should_fail = False
-            for k, v in input.iteritems():
+            for k, v in input.items():
                 try:
                     if isinstance(v, list):
                         setattr(self, k, set(v))
@@ -310,7 +310,7 @@ class NodeSymbol(NodeInterface):
         if isinstance(input, dict):
             should_fail = False
 
-            for k, v in input.iteritems():
+            for k, v in input.items():
                 try:
                     if isinstance(v, list):
                         setattr(self, k, set(v))
@@ -435,7 +435,7 @@ class NodeFile(NodeInterface):
     def __init__(self, id, name, input=None):
         if isinstance(input, dict):
             should_fail = False
-            for k, v in input.iteritems():
+            for k, v in input.items():
                 try:
                     if isinstance(v, list):
                         setattr(self, k, set(v))
@@ -551,7 +551,7 @@ class NodeExe(NodeInterface):
     def __init__(self, id, name, input=None):
         if isinstance(input, dict):
             should_fail = False
-            for k, v in input.iteritems():
+            for k, v in input.items():
                 try:
                     if isinstance(v, list):
                         setattr(self, k, set(v))

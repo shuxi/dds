@@ -41,6 +41,8 @@ def exists(env):
     for line in pipe.stdout:
         if found:
             continue  # consume all data
+        if isinstance(line, bytes):
+            line = line.decode('utf-8', 'replace')
         found = re.search(r'^GNU ar|^LLVM', line)
 
     return bool(found)

@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 """Extensible script to run one or more Python Linters across a subset of files in parallel."""
 from __future__ import absolute_import
 from __future__ import print_function

@@ -156,7 +156,7 @@ js_engine_ver = get_option("js-engine") if get_option("server-js") == "on" else 
 
 # On windows, we need to escape the backslashes in the command-line
 # so that windows paths look okay.
-cmd_line = " ".join(sys.argv).encode('string-escape')
+cmd_line = " ".join(sys.argv).encode('unicode-escape').decode('ascii')
 if env.TargetOSIs('windows'):
     cmd_line = cmd_line.replace('\\', r'\\')
 
@@ -649,7 +649,7 @@ env.Append(MODULE_BANNERS = [distsrc.File('README'),
 
 # If no module has introduced a file named LICENSE-Enterprise.txt then this
 # is a Community build, so inject the AGPL and the Community license
-if sum(itertools.imap(lambda x: x.name == "LICENSE-Enterprise.txt", env['MODULE_BANNERS'])) == 0:
+if sum(map(lambda x: x.name == "LICENSE-Enterprise.txt", env['MODULE_BANNERS'])) == 0:
     env.Append(MODULE_BANNERS = [distsrc.File('GNU-AGPL-3.0'),
                                  distsrc.File('LICENSE-Community.txt')])
 
@@ -686,9 +686,9 @@ if env.TargetOSIs('windows'):
     # On windows the .in needs to be explicitly added to the file.
     compass_script = "Install-Compass.ps1.in"
 
-compass_python_interpreter = '/usr/bin/env python2'
+compass_python_interpreter = '/usr/bin/env python3'
 if env.TargetOSIs('darwin'):
-    compass_python_interpreter = '/usr/bin/env python'
+    compass_python_interpreter = '/usr/bin/env python3'
 
 compass_installer = env.Substfile('#/src/mongo/installer/compass/' + compass_script,
                                   SUBST_DICT=[

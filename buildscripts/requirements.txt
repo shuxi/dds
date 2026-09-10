@@ -1,9 +1,19 @@
-# Jira integration
-cryptography == 39.0.1
+# Minimal compile / tooling deps for Python 3.
+# Prefer a venv:
+#   python3 -m venv .venv-py3
+#   .venv-py3/bin/pip install -r buildscripts/requirements.txt
+#   .venv-py3/bin/python buildscripts/scons.py MONGO_VERSION=4.0.3 mongod --disable-warnings-as-errors
+#
+# On Debian/Ubuntu, system packages may cover yaml:
+#   apt-get install python3-yaml
+# Cheetah is still required for error_codes codegen under Python 3.
+
+# Jira integration (optional tooling)
+cryptography >= 39.0.1
 jira == 1.0.10
 pyjwt == 2.4.0
 # Other
-pyyaml == 5.4
+pyyaml >= 5.4
 unittest-xml-reporting == 2.1.0
 # Linters
 yapf == 0.21.0
@@ -14,7 +24,7 @@ pylint == 1.8.3
 pydocstyle == 2.1.1
 # resmoke.py
 -r resmokelib/requirements.txt
-# generate_error_codes.py
-cheetah3 == 3.0.0; python_version < "3"
+# generate_error_codes.py / templates (Cheetah3 required on Python 3 as well)
+cheetah3 >= 3.2.6
 jinja2 == 2.11.3
 mock == 2.0.0

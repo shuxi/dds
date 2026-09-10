@@ -27,8 +27,8 @@ import mongo.platform as mongo_platform
 import mongo.toolchain as mongo_toolchain
 import mongo.generators as mongo_generators
 
-EnsurePythonVersion(2, 7)
-EnsureSConsVersion(2, 5)
+EnsurePythonVersion(3, 6)
+EnsureSConsVersion(3, 1, 2)
 
 from buildscripts import utils
 from buildscripts import moduleconfig
@@ -425,7 +425,7 @@ win_version_min_choices = {
 }
 
 add_option('win-version-min',
-    choices=win_version_min_choices.keys(),
+    choices=list(win_version_min_choices.keys()),
     default=None,
     help='minimum Windows version to support',
     type='choice',
@@ -538,8 +538,14 @@ except IOError as e:
         print("Error opening version.json: {0}".format(e.strerror))
         Exit(1)
 
+    describe = utils.get_git_describe()
+    if isinstance(describe, bytes):
+        describe = describe.decode('utf-8', 'replace')
+    # git describe usually yields "vX.Y.Z..."; strip a leading 'v' when present.
+    if describe.startswith('v') or describe.startswith('V'):
+        describe = describe[1:]
     version_data = {
-        'version': utils.get_git_describe()[1:],
+        'version': describe,
         'githash': utils.get_git_version(),
     }
 
@@ -551,7 +557,7 @@ except ValueError as e:
 def variable_shlex_converter(val):
     # If the argument is something other than a string, propogate
     # it literally.
-    if not isinstance(val, basestring):
+    if not isinstance(val, str):
         return val
     parse_mode = get_option('variable-parse-mode')
     if parse_mode == 'auto':
@@ -767,8 +773,8 @@ env_vars.Add('MONGO_VERSION',
     validator=validate_mongo_version)
 
 env_vars.Add('INNER_MONGO_VERSION',
-    help='Sets the version string for MongoDB',
-    default=version_data['version'])
+    help='Sets the inner version string shown by mongod --version (defaults to MONGO_VERSION)',
+    default=version_data['version'] or None)
 
 env_vars.Add('MONGO_GIT_HASH',
     help='Sets the githash to store in the MongoDB version information',
@@ -898,7 +904,7 @@ SConsignFile(str(sconsDataDir.File('sconsign')))
 def printLocalInfo():
     import sys, SCons
     print( "scons version: " + SCons.__version__ )
-    print( "python version: " + " ".join( [ `i` for i in sys.version_info ] ) )
+    print( "python version: " + " ".join( [ repr(i) for i in sys.version_info ] ) )
 
 printLocalInfo()
 
@@ -973,6 +979,11 @@ envDict = dict(BUILD_ROOT=buildDir,
 
 env = Environment(variables=env_vars, **envDict)
 del envDict
+
+# When git describe is unavailable, INNER_MONGO_VERSION may be empty while MONGO_VERSION
+# was set on the command line. Keep --version output consistent.
+if not env.get('INNER_MONGO_VERSION'):
+    env['INNER_MONGO_VERSION'] = env['MONGO_VERSION']
 
 env.AddMethod(mongo_platform.env_os_is_wrapper, 'TargetOSIs')
 env.AddMethod(mongo_platform.env_get_os_name_wrapper, 'GetTargetOSName')
@@ -2093,7 +2104,7 @@ def doConfigure(myenv):
         # to make them real errors.
         cloned.Append(CCFLAGS=['-Werror'])
         conf = Configure(cloned, help=False, custom_tests = {
-                'CheckFlag' : lambda(ctx) : CheckFlagTest(ctx, tool, extension, flag)
+                'CheckFlag' : lambda ctx: CheckFlagTest(ctx, tool, extension, flag)
         })
         available = conf.CheckFlag()
         conf.Finish()
@@ -2572,7 +2583,7 @@ def doConfigure(myenv):
         # Select those unique black files that are associated with the
         # currently enabled sanitizers, but filter out those that are
         # zero length.
-        blackfiles = {v for (k, v) in blackfiles_map.iteritems() if k in sanitizer_list}
+        blackfiles = {v for (k, v) in blackfiles_map.items() if k in sanitizer_list}
         blackfiles = [f for f in blackfiles if os.stat(f.path).st_size != 0]
 
         # Filter out any blacklist options that the toolchain doesn't support.
@@ -3394,7 +3405,7 @@ def doConfigure(myenv):
 
                         size_t initialZeros = (mask == 0 ? size : __builtin_ctzll(mask));
                         if (initialZeros != offset) {{
-			    return 1;
+                            return 1;
                         }}
 
                         if (offset < size) {{
@@ -3402,7 +3413,7 @@ def doConfigure(myenv):
                         }}
                     }}
 
-		    return 0;
+                    return 0;
                 }}
             """.format(index)
 
@@ -3415,7 +3426,7 @@ def doConfigure(myenv):
 
         outputIndex = next((idx for idx in [0,1] if conf.CheckAltivecVbpermqOutput(idx)), None)
         if outputIndex is not None:
-	    conf.env.SetConfigHeaderDefine("MONGO_CONFIG_ALTIVEC_VEC_VBPERMQ_OUTPUT_INDEX", outputIndex)
+            conf.env.SetConfigHeaderDefine("MONGO_CONFIG_ALTIVEC_VEC_VBPERMQ_OUTPUT_INDEX", outputIndex)
         else:
             myenv.ConfError("Running on ppc64le, but can't find a correct vec_vbpermq output index.  Compiler or platform not supported")
 

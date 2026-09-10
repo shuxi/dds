@@ -133,7 +133,7 @@ def __get_libdeps(node):
                 marked.add(n.target_node)
                 tsorted.append(n.target_node)
 
-            except DependencyCycleError, e:
+            except DependencyCycleError as e:
                 if len(e.cycle_nodes) == 1 or e.cycle_nodes[0] != e.cycle_nodes[-1]:
                     e.cycle_nodes.insert(0, n.target_node)
                 raise
@@ -161,7 +161,7 @@ def __get_syslibdeps(node):
         for lib in __get_libdeps(node):
             for syslib in node.get_env().Flatten(lib.get_env().get(syslibdeps_env_var, [])):
                 if syslib:
-                    if type(syslib) in (str, unicode) and syslib.startswith(missing_syslibdep):
+                    if isinstance(syslib, str) and syslib.startswith(missing_syslibdep):
                         print("Target '%s' depends on the availability of a "
                               "system provided library for '%s', "
                               "but no suitable library was found during configuration." %
@@ -215,12 +215,12 @@ def get_syslibdeps(source, target, env, for_signature):
     lib_link_suffix = env.subst('$LIBLINKSUFFIX')
     result = []
     for d in deps:
-        # Elements of syslibdeps are either strings (str or unicode), or they're File objects.
+        # Elements of syslibdeps are either strings, or they're File objects.
         # If they're File objects, they can be passed straight through.  If they're strings,
         # they're believed to represent library short names, that should be prefixed with -l
         # or the compiler-specific equivalent.  I.e., 'm' becomes '-lm', but 'File("m.a") is passed
         # through whole cloth.
-        if type(d) in (str, unicode):
+        if isinstance(d, str):
             result.append('%s%s%s' % (lib_link_prefix, d, lib_link_suffix))
         else:
             result.append(d)

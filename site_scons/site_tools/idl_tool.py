@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # Copyright (C) 2017 MongoDB Inc.
 #
 # This program is free software: you can redistribute it and/or  modify
@@ -44,6 +44,8 @@ def idl_scanner(node, env, path):
     # Use the import scanner mode of the IDL compiler to file imported files
     cmd = [sys.executable, "buildscripts/idl/idlc.py",  '--include','src', str(node), '--write-dependencies']
     deps_str = subprocess.check_output(cmd)
+    if isinstance(deps_str, bytes):
+        deps_str = deps_str.decode('utf-8')
 
     deps_list = deps_str.splitlines()
 

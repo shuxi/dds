@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 """Scons module."""
 
 from __future__ import print_function
@@ -6,7 +6,7 @@ from __future__ import print_function
 import os
 import sys
 
-SCONS_VERSION = os.environ.get('SCONS_VERSION', "2.5.0")
+SCONS_VERSION = os.environ.get('SCONS_VERSION', "3.1.2")
 
 MONGODB_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 SCONS_DIR = os.path.join(MONGODB_ROOT, 'src', 'third_party', 'scons-' + SCONS_VERSION,

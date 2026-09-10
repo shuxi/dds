@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 """Prune check program.
 
 This program stamps the shared scons directory with a timestamp so we can

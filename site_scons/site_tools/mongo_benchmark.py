@@ -11,10 +11,10 @@ def register_benchmark(env, test):
     env.Alias('$BENCHMARK_ALIAS', test)
 
 def benchmark_list_builder_action(env, target, source):
-    ofile = open(str(target[0]), 'wb')
+    ofile = open(str(target[0]), 'w')
     try:
         for s in _benchmarks:
-            print '\t' + str(s)
+            print('\t' + str(s))
             ofile.write('%s\n' % s)
     finally:
         ofile.close()
