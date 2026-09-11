@@ -104,7 +104,7 @@ class BenchrunEmbeddedTestCase(  # pylint: disable=too-many-instance-attributes
 
     def run_test(self):
         """Run the test for specified number of iterations."""
-        for iter_num in xrange(self.benchrun_repetitions):
+        for iter_num in range(self.benchrun_repetitions):
             # Set the output file for each iteration.
             local_report_path = self._report_path(iter_num)
             device_report_path = self._device_report_path(iter_num)

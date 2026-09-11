@@ -21,10 +21,8 @@ def make_hook(class_name, *args, **kwargs):
     return _HOOKS[class_name](*args, **kwargs)
 
 
-class Hook(object):
+class Hook(object, metaclass=registry.make_registry_metaclass(_HOOKS)):
     """Common interface all Hooks will inherit from."""
-
-    __metaclass__ = registry.make_registry_metaclass(_HOOKS)  # type: ignore
 
     REGISTERED_NAME = registry.LEAVE_UNREGISTERED
 

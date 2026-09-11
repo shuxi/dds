@@ -91,9 +91,12 @@ To install dependencies on Debian or Ubuntu systems:
     # aptitude install build-essential
     # aptitude install libboost-filesystem-dev libboost-program-options-dev libboost-system-dev libboost-thread-dev
 
-To run tests as well, you will need PyMongo:
+To run tests as well, you will need PyMongo (and requests). Prefer the project Python 3 venv:
 
-    # aptitude install python-pymongo
+    $ .venv-py3/bin/pip install 'pymongo>=3.0,<4' 'requests>=2.16.1'
+    $ .venv-py3/bin/python buildscripts/resmoke.py --suites=core
+
+(System package `python-pymongo` targets Python 2 and is not used by the Python 3 path.)
 
 OS X
 --------------

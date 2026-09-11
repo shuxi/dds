@@ -2,7 +2,10 @@
 
 from __future__ import absolute_import
 
-import Queue
+try:
+    import queue as Queue  # Python 3
+except ImportError:
+    import Queue  # Python 2
 import collections
 import json
 import math
@@ -45,7 +48,7 @@ def file_list_size(files):
 def directory_size(directory):
     """Return size (in bytes) of files in 'directory' tree."""
     dir_bytes = 0
-    for root_dir, _, files in os.walk(unicode(directory)):
+    for root_dir, _, files in os.walk(directory):
         for name in files:
             full_name = os.path.join(root_dir, name)
             try:

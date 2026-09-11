@@ -1,7 +1,9 @@
 mock == 2.0.0 ; python_version < "3"
-pymongo >= 3.0
+# Pin to 3.x: pymongo 4 removed several APIs still used by replica/auth hooks.
+pymongo >= 3.0, < 4
 pypiwin32 == 219 ; sys_platform == "win32" and python_version < "3"
 pypiwin32 == 223 ; sys_platform == "win32" and python_version > "3"
-PyYAML == 5.4
+# 5.4 does not build cleanly on Python 3.12; 6.x is fine for resmoke YAML.
+PyYAML >= 5.4
 requests >= 2.16.1
 subprocess32 >= 3.2.7 ; os_name == "posix" and python_version < "3"

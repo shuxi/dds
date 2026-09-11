@@ -261,7 +261,8 @@ class BuildloggerServer(object):
         """Initialize BuildloggerServer."""
         tmp_globals = {}
         self.config = {}
-        execfile(_BUILDLOGGER_CONFIG, tmp_globals, self.config)
+        with open(_BUILDLOGGER_CONFIG, "rb") as config_file:
+            exec(compile(config_file.read(), _BUILDLOGGER_CONFIG, "exec"), tmp_globals, self.config)
 
         # Rename "slavename" to "username" if present.
         if "slavename" in self.config and "username" not in self.config:

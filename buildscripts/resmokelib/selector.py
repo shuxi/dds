@@ -310,7 +310,7 @@ def make_expression(conf):
     elif isinstance(conf, dict):
         if len(conf) != 1:
             raise ValueError("Tag matching expressions should only contain one key")
-        key = conf.keys()[0]
+        key = next(iter(conf))
         value = conf[key]
         if key == "$allOf":
             return _AllOfExpression(_make_expression_list(value))

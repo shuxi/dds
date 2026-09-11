@@ -1,7 +1,7 @@
 # DDS 项目迁移至 Python 3 编译 — 工作总结
 
-日期：2026-09-10  
-目标：将基于 MongoDB 4.0.3 的 DDS 工程从 Python 2.7 构建链迁移为可用 Python 3 编译，并完成 `mongod` / `mongos` / `mongo` / `mongobridge` 验证。
+日期：2026-09-10（构建）；2026-09-11（resmoke 测试）  
+目标：将基于 MongoDB 4.0.3 的 DDS 工程从 Python 2.7 构建链迁移为可用 Python 3 编译，并完成 `mongod` / `mongos` / `mongo` / `mongobridge` 验证；随后将 **resmoke JS 测试框架** 迁移为可用 Python 3 运行。
 
 ---
 
@@ -176,17 +176,17 @@ cd /root/claudeCodeProject/vup/dds
 3. **构建期代码生成脚本适配 Py3**：IDL、error_codes（Cheetah）、FTS/unicode 生成器、ICU 初始化生成、归档脚本等。  
 4. **Python 依赖与文档**：更新 `requirements.txt`、`docs/building.md`；建立 `.venv-py3` 并安装上述包。  
 5. **版本串显示修复**：修正 `git describe` 在 Py3 下返回 bytes 导致 `INNER_MONGO_VERSION` 异常；空值时回退到 `MONGO_VERSION`。  
-6. **编译验证**：成功产出 `mongod`、`mongos`、`mongo`、`mongobridge`。
+6. **编译验证**：成功产出 `mongod`、`mongos`、`mongo`、`mongobridge`。  
+7. **resmoke 测试框架 Python 3 化**：修正 `long`/`xrange`/`basestring`/`Queue`/`print`/`execfile`/`.next()`、三处 `__metaclass__` 注册、`rmtree` 路径处理；放宽 `PyYAML`、约束 `pymongo<4`。
 
 ---
 
 ## 6. 明确未纳入本次范围的事项
 
-- **resmoke / 大量测试框架脚本** 的完整 Python 3 化（仍可能存在 `xrange`、`unicode`、`Queue` 等 Py2 API）。  
 - **打包脚本、lint 全家桶、CI 流水线** 的全面迁移。  
+- resmoke 以外的辅助工具（如 `burn_in_tests.py`、`ciconfig/tags.py` 的 `sort(cmp=...)`）若走冷路径，可能仍含 Py2 API，需按需再改。  
+- replica set / auth / stepdown 等重度依赖 pymongo 旧 API 的套件：已通过钉死 `pymongo>=3,<4` 规避；未做 pymongo 4 API 改写。  
 - 将 `.venv-py3` 或本地构建产物提交进版本库（不建议）。
-
-若后续需要“仅编译”以外的测试/打包全链路 Py3 化，需另开一轮改造。
 
 ---
 
@@ -196,11 +196,32 @@ cd /root/claudeCodeProject/vup/dds
 cd /root/claudeCodeProject/vup/dds
 python3 -m venv .venv-py3
 .venv-py3/bin/pip install -U pip
-.venv-py3/bin/pip install 'pyyaml>=5.4' 'cheetah3>=3.2.6' 'jinja2==2.11.3' packaging setuptools
+.venv-py3/bin/pip install \
+  'pyyaml>=5.4' 'cheetah3>=3.2.6' 'jinja2==2.11.3' packaging setuptools \
+  'pymongo>=3.0,<4' 'requests>=2.16.1'
 
+# 编译
 ./.venv-py3/bin/python buildscripts/scons.py \
   MONGO_VERSION=4.0.3 mongod mongos mongo mongobridge \
   --disable-warnings-as-errors -j$(nproc)
+
+# 跑 JS 测试（示例：core 套件；或指定若干用例）
+./.venv-py3/bin/python buildscripts/resmoke.py \
+  --suites=core --continueOnFailure --jobs=2
 ```
 
-前提：仓库中已包含本次对构建脚本 / SCons 3.1.2 的改动。
+前提：仓库中已包含本次对构建脚本 / SCons 3.1.2 / resmoke 的改动。
+
+---
+
+## 8. resmoke Python 3 改动要点
+
+| 类别 | 处理 |
+|------|------|
+| 语法 | `long`→`int`，`xrange`→`range`，`print` 语句→函数，`basestring`→`str` |
+| 标准库 | `Queue`→`queue`（保留 Py2 fallback），`execfile`→`exec(compile(...))`，`generator.next()`→`next(...)` |
+| 注册机制 | Fixture / Hook / TestCase：`__metaclass__ = ...` → `metaclass=...`（否则 Py3 下注册表为空，无法创建 `MongoDFixture` / `js_test`） |
+| 路径 | `utils.rmtree`：Py3 直接用 `str`，bytes 则 decode |
+| 依赖 | `PyYAML>=5.4`；`pymongo>=3,<4`；`requests` |
+
+**验证**：`--help` / `--listSuites` / `--dryRun=tests` 通过；`basic1.js` / `basic2.js` / `basic4.js`（含 ValidateCollections）在 Py3 下全部通过。
